@@ -1,0 +1,61 @@
+experiment:
+    id: srn-chair-test1
+    logdir: logs
+    randomseed: 42
+    iterations: 100000
+    validate_every: 500
+    save_every: 5000
+    print_every: 100
+
+dataset:
+    type: SRNDataset
+    basedir: /home/tkhurana/Documents/akash/datasets/srn/srn_cars
+    resolution_level: 2
+    train_batch_size: 16
+    val_batch_size: 1
+    near: 1.25
+    far: 2.75
+
+models:
+    coarse:
+        type: FlexibleNeRFModel
+        num_layers: 8
+        hidden_size: 256
+        skip_connect_ids: [4]
+    fine:
+        type: FlexibleNeRFModel
+        num_layers: 8
+        hidden_size: 256
+        skip_connect_ids: [4]
+
+optimizer:
+    type: Adam
+    lr: 5.0E-3
+    scheduler_gamma: 0.1
+    scheduler_step_size: 500000
+
+nerf:
+    ray_sampler:
+        num_random_rays: 32768
+    point_sampler:
+        num_coarse: 64
+        num_fine: 128
+        near_limit: 2
+        far_limit: 6
+        spacing_mode: "lindepth"
+        perturb: True
+    embedder:
+        num_encoding_fn_xyz: 10
+        include_input_xyz: True
+        log_sampling_xyz: True
+        use_viewdirs: True
+        num_encoding_fn_dir: 4
+        include_input_dir: True
+        log_sampling_dir: True
+    white_background: False
+    train:
+        chunksize: 4096
+        radiance_field_noise_std: 0.2
+    validation:
+        chunksize: 16384
+        radiance_field_noise_std: 0.0
