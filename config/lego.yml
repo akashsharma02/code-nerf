@@ -36,7 +36,7 @@ optimizer:
 
 nerf:
     ray_sampler:
-        num_random_rays: 32768
+        num_random_rays: 16384
     point_sampler:
         num_coarse: 64
         num_fine: 128
@@ -57,5 +57,5 @@ nerf:
         chunksize: 4096
         radiance_field_noise_std: 0.2
     validation:
-        chunksize: 16384
+        chunksize: 8192
         radiance_field_noise_std: 0.0

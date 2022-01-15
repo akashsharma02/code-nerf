@@ -29,6 +29,8 @@ class RaySampler(object):
         self.intrinsics = intrinsics
         self.intrinsics = self.intrinsics.to(device)
         self.focal_length = self.intrinsics[..., 0, 0]
+        self.cx = self.intrinsics[..., 0, 2]
+        self.cy = self.intrinsics[..., 1, 2]
 
         ii, jj = torch.meshgrid(
             torch.arange(
@@ -41,8 +43,8 @@ class RaySampler(object):
         )
         self.directions = torch.stack(
             [
-                (ii - width * 0.5) / self.focal_length,
-                -(jj - height * 0.5) / self.focal_length,
+                (ii - self.cx) / self.focal_length,
+                -(jj - self.cy) / self.focal_length,
                 -torch.ones_like(ii),
             ],
             dim=-1,
@@ -65,23 +67,17 @@ class RaySampler(object):
 
         ray_origins, ray_directions = self.get_bundle(tform_cam2world)
         ray_origins, ray_directions = ray_origins.flatten(1, 2), ray_directions.flatten(1, 2)
-        # ro, rd = ray_origins.reshape(-1, 3), ray_directions.reshape(-1, 3)
 
-        select_inds = np.array([np.random.choice(ray_origins.shape[-2], self.sample_size, replace=False) for _ in range(batch_size)])
+        select_inds = []
+        pixel_range = np.arange(0, ray_origins.shape[-2])
+        for _ in range(batch_size):
+            select_inds.append(np.random.permutation(pixel_range)[:self.sample_size])
+        select_inds = np.asarray(select_inds)
 
-        # print(select_inds, select_inds.shape)
         ray_origins = [ray_origins[i, select_inds[i], :] for i in range(batch_size)]
         ray_directions = [ray_directions[i, select_inds[i], :] for i in range(batch_size)]
-        ray_origins = torch.cat(ray_origins, dim=0).reshape(-1, 3)
-        ray_directions = torch.cat(ray_directions, dim=0).reshape(-1, 3)
-
-        # select_inds = np.random.choice(
-        #     ro.shape[-2], size=(
-        #         self.sample_size*batch_size), replace=False
-        # )
-
-        # ray_origins = ro[select_inds, :]
-        # ray_directions = rd[select_inds, :]
+        ray_origins = torch.cat(ray_origins, dim=0)
+        ray_directions = torch.cat(ray_directions, dim=0)
 
         return ray_origins, ray_directions, select_inds
 
@@ -96,12 +92,9 @@ class RaySampler(object):
             ray directions: torch.Tensor [batch, H, W, 3]
 
         """
-        ray_directions = torch.tensordot(
-            tform_cam2world[..., :3, :3],
-            self.directions.T,
-            dims=([2], [0])
-        ).transpose(1, -1).contiguous()
+        directions = self.directions[..., None]
 
+        ray_directions = torch.einsum('hwij, bji->bhwj', directions, tform_cam2world[..., :3, :3]).contiguous()
         ray_origins = tform_cam2world[..., :3, -1][:, None, None, :].expand(ray_directions.shape)
         return ray_origins, ray_directions
 
@@ -123,7 +116,7 @@ if __name__ == "__main__":
     from view_synthesis.datasets.dataset import BlenderNeRFDataset
     dataset = BlenderNeRFDataset(args.dataset_dir, resolution_level=32, mode="val")
     dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=1, shuffle=True, num_workers=0)
+        dataset, batch_size=2, shuffle=True, num_workers=0)
 
     first_data_sample = next(iter(dataloader))
 
@@ -131,7 +124,7 @@ if __name__ == "__main__":
      width), intrinsic = first_data_sample["color"].shape[1:-1], first_data_sample["intrinsic"]
 
     print(f" Height: {height}, Width: {width}, Intrinsics:\n {intrinsic}")
-
+    target_image_pixels = first_data_sample["color"].flatten(1, 2)
     device = None
     if torch.cuda.is_available():
         device = "cuda"
@@ -139,6 +132,8 @@ if __name__ == "__main__":
         device = "cpu"
 
     ray_sampler = RaySampler(height, width, intrinsic[0], sample_size=args.num_random_rays, device=device)
+
+    print(f"Ray sampler directions: {ray_sampler.directions.T.shape}")
     pose = first_data_sample["pose"].to(device)
     ro, rd = ray_sampler.get_bundle(pose)
     ray_origins, ray_directions, select_inds = ray_sampler.sample(
@@ -148,6 +143,14 @@ if __name__ == "__main__":
         f"Ray bundle shape: {ray_origins.shape}, {ray_directions.shape}, {select_inds.shape}")
     print(f"Ray origins:\n {ray_origins}")
     print(f"Ray directions:\n {ray_directions}")
+    target_pixels = [target_image_pixels[i, select_inds[i], :] for i in range(2)]
+
+    print(f"Target pixels for 1st batch: \n {target_image_pixels[0, select_inds[0], :]}")
+    print(f"Target pixels for 2nd batch: \n {target_image_pixels[1, select_inds[1], :]}")
+
+    target_pixels = torch.cat(target_pixels, dim=0)
+    print(f"Target pixels: {target_pixels}, {target_pixels.shape}")
+
     print(f"select indices:\n {select_inds}")
     print(f"Pose origin:\n {pose[:, :3, 3]}")
     print(f"Pose:\n {pose}")

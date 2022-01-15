@@ -29,7 +29,7 @@ class CarInteriorDataset(torch.utils.data.Dataset):
         self.max_depth = max_depth
 
         self.intrinsic = np.loadtxt(
-            self.root_dir / "intrinsic.txt").reshape(4, 4)
+            self.root_dir / "intrinsics.txt").reshape(4, 4)
 
         self.color_img_fnames = np.array([f for f in self.color_img_dir.iterdir(
         ) if f.is_file() and f.suffix in [".png", ".jpg"]])

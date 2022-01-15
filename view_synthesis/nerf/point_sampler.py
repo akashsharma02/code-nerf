@@ -137,15 +137,14 @@ if __name__ == "__main__":
     np.random.seed(42)
     torch.manual_seed(42)
 
-    from view_synthesis.datasets.dataset import CarInteriorDataset
     from view_synthesis.nerf.ray_sampler import RaySampler
 
-    dataset = CarInteriorDataset(args.dataset_dir, resolution_level=32)
+    from view_synthesis.datasets.dataset import BlenderNeRFDataset
+    dataset = BlenderNeRFDataset(args.dataset_dir, resolution_level=32, mode="val")
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=2, shuffle=True, num_workers=0)
 
     first_data_sample = next(iter(dataloader))
-
     (height,
      width), intrinsic = first_data_sample["color"].shape[1:-1], first_data_sample["intrinsic"]
 
@@ -170,17 +169,17 @@ if __name__ == "__main__":
                                  near=0,
                                  far=5,
                                  spacing_mode="lindisp",
-                                 perturb=False,
+                                 perturb=True,
                                  dtype=intrinsic[0].dtype,
                                  device=device)
     pts, z_vals = point_sampler.sample_uniform(ray_origins, ray_directions)
 
     print(f"Uniform sampled points: {z_vals[0]}")
     # Take the z value from the depth image of the first left-top pixel
-    depth_img = first_data_sample["depth"]
-    weights = point_sampler.z_vals
-    z_mean = depth_img[..., :].reshape(-1, 1)[select_inds].to(weights)
-    z_sigma = torch.Tensor([0.25]).expand(z_mean.shape).to(weights)  # 0.25meters std deviation
+    # depth_img = first_data_sample["depth"]
+    # weights = point_sampler.z_vals
+    # z_mean = depth_img[..., :].reshape(-1, 1)[select_inds].to(weights)
+    # z_sigma = torch.Tensor([0.25]).expand(z_mean.shape).to(weights)  # 0.25meters std deviation
 
     # Get linearly spaced points between near and far
     def gaussian(weights: torch.Tensor, mean: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
@@ -194,8 +193,8 @@ if __name__ == "__main__":
         weights = -0.5 * ((weights - mean) / (2 * sigma ** 2)) ** 2
         return torch.exp(weights)
 
-    weights = gaussian(weights=weights, mean=z_mean, sigma=z_sigma)
-    print(weights.shape, ray_origins.shape, ray_directions.shape, z_vals.shape)
-    pts, z_vals = point_sampler.sample_pdf(ray_origins, ray_directions, weights.squeeze()[..., 1:-1], z_vals)
-    print(f"Sampled points:\n {z_vals[0]}, {z_vals[0].shape}")
-    print(f"Mean: {z_mean[0]}")
+    # weights = gaussian(weights=weights, mean=z_mean, sigma=z_sigma)
+    # print(weights.shape, ray_origins.shape, ray_directions.shape, z_vals.shape)
+    # pts, z_vals = point_sampler.sample_pdf(ray_origins, ray_directions, weights.squeeze()[..., 1:-1], z_vals)
+    # print(f"Sampled points:\n {z_vals[0]}, {z_vals[0].shape}")
+    # print(f"Mean: {z_mean[0]}")
