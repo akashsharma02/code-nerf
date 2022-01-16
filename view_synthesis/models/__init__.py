@@ -1,1 +1,1 @@
-from .model import FlexibleNeRFModel, MultiHeadNeRFModel, VeryTinyNeRFModel
+from .model import FlexibleNeRFModel, MultiHeadNeRFModel, VeryTinyNeRFModel, CodeNeRFModel

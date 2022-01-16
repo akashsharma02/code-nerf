@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class VeryTinyNeRFModel(torch.nn.Module):
     r"""Define a "very tiny" NeRF model comprising three fully connected layers.
     """
@@ -29,6 +30,7 @@ class VeryTinyNeRFModel(torch.nn.Module):
         x = self.relu(self.layer2(x))
         x = self.layer3(x)
         return x
+
 
 class MultiHeadNeRFModel(torch.nn.Module):
     r"""Define a "multi-head" NeRF model (radiance and RGB colors are predicted by
@@ -65,7 +67,7 @@ class MultiHeadNeRFModel(torch.nn.Module):
         self.relu = torch.nn.functional.relu
 
     def forward(self, x):
-        x, view = x[..., : self.xyz_encoding_dims], x[..., self.xyz_encoding_dims :]
+        x, view = x[..., : self.xyz_encoding_dims], x[..., self.xyz_encoding_dims:]
         x = self.relu(self.layer1(x))
         x = self.relu(self.layer2(x))
         sigma = self.layer3_1(x)
@@ -75,6 +77,7 @@ class MultiHeadNeRFModel(torch.nn.Module):
         x = self.relu(self.layer5(x))
         x = self.layer6(x)
         return torch.cat((x, sigma), dim=-1)
+
 
 class FlexibleNeRFModel(torch.nn.Module):
     def __init__(
@@ -138,7 +141,7 @@ class FlexibleNeRFModel(torch.nn.Module):
             out = self.relu(layer_xyz(out))
 
         if self.use_viewdirs:
-            view = x[..., self.dim_xyz :]
+            view = x[..., self.dim_xyz:]
             feat = self.relu(self.fc_feat(out))
             sigma = self.fc_alpha(feat)
             out = torch.cat((feat, view), dim=-1)
@@ -149,3 +152,80 @@ class FlexibleNeRFModel(torch.nn.Module):
         else:
             return self.fc_out(out)
 
+
+class CodeNeRFModel(torch.nn.Module):
+    def __init__(
+        self,
+        hidden_size=128,
+        num_embeddings=1,
+        shape_code_size=128,
+        texture_code_size=128,
+        num_encoding_fn_xyz=6,
+        num_encoding_fn_dir=4,
+        include_input_xyz=True,
+        include_input_dir=True,
+    ):
+        super(CodeNeRFModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.shape_code_size = shape_code_size
+        self.texture_code_size = texture_code_size
+
+        include_input_xyz = 3 if include_input_xyz else 0
+        include_input_dir = 3 if include_input_dir else 0
+        self.dim_xyz = include_input_xyz + 2 * 3 * num_encoding_fn_xyz
+        self.dim_dir = include_input_dir + 2 * 3 * num_encoding_fn_dir
+
+        self.shape_embedding = torch.nn.Embedding(num_embeddings, shape_code_size)
+        self.texture_embedding = torch.nn.Embedding(num_embeddings, texture_code_size)
+
+        self.layer_xyz1 = torch.nn.Linear(self.dim_xyz, self.hidden_size)
+        self.layer_xyz2 = torch.nn.Linear(self.hidden_size + self.shape_code_size, self.hidden_size)
+        self.fc_out = torch.nn.Linear(self.hidden_size + self.shape_code_size, self.shape_code_size + 1)
+
+        self.shape_code_layer1 = torch.nn.Linear(self.shape_code_size, self.shape_code_size)
+        self.shape_code_layer2 = torch.nn.Linear(self.shape_code_size, self.shape_code_size)
+        self.texture_code_layer1 = torch.nn.Linear(self.shape_code_size, self.shape_code_size)
+
+        self.layer_dir1 = torch.nn.Linear(self.dim_dir + self.shape_code_size, self.hidden_size)
+        self.layer_dir2 = torch.nn.Linear(self.hidden_size, self.hidden_size)
+
+        self.fc_rgb = torch.nn.Linear(self.hidden_size + self.texture_code_size, 3)
+
+        self.relu = torch.nn.functional.relu
+
+    def forward(self, object_id: int, x: torch.Tensor):
+        """ Forward function for NeRF Model
+
+        :function:
+            x: torch.Tensor [sample_size: dim_xyz + dim_dir]
+        :returns: TODO
+
+        """
+
+        xyz = x[..., : self.dim_xyz]
+        view = x[..., self.dim_xyz:]
+
+        z_s = self.shape_embedding(object_id)
+        z_t = self.texture_embedding(object_id)
+
+        z_s_out = self.relu(self.shape_code_layer1(z_s))
+        z_s_out2 = self.relu(self.shape_code_layer2(z_s))
+
+        z_t_out = self.relu(self.texture_code_layer1(z_t))
+
+        xyz_out = self.relu(self.layer_xyz1(xyz))
+        xyz_out = torch.cat((xyz_out, z_s_out), dim=-1)
+        xyz_out = self.relu(self.layer_xyz2(xyz_out))
+        xyz_out = torch.cat((xyz_out, z_s_out2), dim=-1)
+
+        feat = self.relu(self.fc_out(xyz_out))
+
+        sigma, feat = feat[..., :1], feat[..., 1:]
+
+        view_in = torch.cat((feat, view), dim=-1)
+        view_out = self.relu(self.layer_dir1(view_in))
+        view_out = self.relu(self.layer_dir2(view_out))
+        view_out = torch.cat((view_out, z_t_out), dim=-1)
+        rgb = self.relu(self.fc_rgb(view_out))
+
+        return torch.cat((rgb, sigma), dim=-1)
