@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 
 
 class VeryTinyNeRFModel(torch.nn.Module):
@@ -153,6 +152,33 @@ class FlexibleNeRFModel(torch.nn.Module):
             return self.fc_out(out)
 
 
+class ShapeTextureEmbedding(torch.nn.Module):
+    def __init__(
+        self,
+        num_embeddings,
+        shape_code_size=128,
+        texture_code_size=128,
+    ):
+        super(ShapeTextureEmbedding, self).__init__()
+        self.num_embeddings = num_embeddings
+        self.shape_code_size = shape_code_size
+        self.texture_code_size = texture_code_size
+
+        self.shape_embedding = torch.nn.Embedding(self.num_embeddings, self.shape_code_size)
+        self.texture_embedding = torch.nn.Embedding(self.num_embeddings, self.texture_code_size)
+
+    def forward(self, object_ids: torch.Tensor):
+        z_s = self.shape_embedding(object_ids)
+        z_t = self.texture_embedding(object_ids)
+        return z_s, z_t
+
+    def get_all_embeddings(self, device: torch.cuda.Device):
+        all_idx = torch.arange(0, self.num_embeddings, dtype=int, device=device)
+        z_s = self.shape_embedding(all_idx)
+        z_t = self.texture_embedding(all_idx)
+        return z_s, z_t
+
+
 class CodeNeRFModel(torch.nn.Module):
     def __init__(
         self,
@@ -175,9 +201,6 @@ class CodeNeRFModel(torch.nn.Module):
         self.dim_xyz = include_input_xyz + 2 * 3 * num_encoding_fn_xyz
         self.dim_dir = include_input_dir + 2 * 3 * num_encoding_fn_dir
 
-        self.shape_embedding = torch.nn.Embedding(num_embeddings, shape_code_size)
-        self.texture_embedding = torch.nn.Embedding(num_embeddings, texture_code_size)
-
         self.layer_xyz1 = torch.nn.Linear(self.dim_xyz, self.hidden_size)
         self.layer_xyz2 = torch.nn.Linear(self.hidden_size + self.shape_code_size, self.hidden_size)
         self.fc_out = torch.nn.Linear(self.hidden_size + self.shape_code_size, self.shape_code_size + 1)
@@ -193,10 +216,12 @@ class CodeNeRFModel(torch.nn.Module):
 
         self.relu = torch.nn.functional.relu
 
-    def forward(self, object_id: int, x: torch.Tensor):
+    def forward(self, z_s: torch.Tensor, z_t: torch.Tensor, x: torch.Tensor):
         """ Forward function for NeRF Model
 
         :function:
+            z_s: Shape Latent Embedding [sample_size x shape_code_size]
+            z_t: Texture Latent Embedding [sample_size x texture_code_size]
             x: torch.Tensor [sample_size: dim_xyz + dim_dir]
         :returns: TODO
 
@@ -204,9 +229,6 @@ class CodeNeRFModel(torch.nn.Module):
 
         xyz = x[..., : self.dim_xyz]
         view = x[..., self.dim_xyz:]
-
-        z_s = self.shape_embedding(object_id)
-        z_t = self.texture_embedding(object_id)
 
         z_s_out = self.relu(self.shape_code_layer1(z_s))
         z_s_out2 = self.relu(self.shape_code_layer2(z_s))

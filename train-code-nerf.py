@@ -1,4 +1,4 @@
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Literal
 from numpy.typing import DTypeLike
 from types import FunctionType
 import os
@@ -35,7 +35,13 @@ def prepare_dataloader(cfg: CfgNode
 
     """
     if cfg.dataset.type == "SRNDataset":
-        dataset = datasets.SRNDataset(
+        train_dataset = datasets.SRNDataset(
+            path=cfg.dataset.basedir,
+            stage="train",
+            image_size=(cfg.dataset.image_size, cfg.dataset.image_size),
+            world_scale=cfg.dataset.world_scale
+        )
+        val_dataset = datasets.SRNDataset(
             path=cfg.dataset.basedir,
             stage="val",
             image_size=(cfg.dataset.image_size, cfg.dataset.image_size),
@@ -45,12 +51,10 @@ def prepare_dataloader(cfg: CfgNode
         dataset = getattr(datasets, cfg.dataset.type)(
             cfg.dataset.basedir,
             cfg.dataset.resolution_level)
-
-    train_size = int(len(dataset) * 0.75)
-    val_size = len(dataset) - train_size
-
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size])
+        train_size = int(len(dataset) * 0.75)
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = torch.utils.data.random_split(
+            dataset, [train_size, val_size])
 
     train_sampler = torch.utils.data.RandomSampler(
         train_dataset,
@@ -85,7 +89,7 @@ def prepare_dataloader(cfg: CfgNode
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset, batch_size=cfg.dataset.val_batch_size, shuffle=False, num_workers=0, sampler=val_sampler, pin_memory=False)
 
-    return train_dataloader, val_dataloader, dataset
+    return train_dataloader, val_dataloader, train_dataset
 
 
 def prepare_models(cfg: CfgNode,
@@ -97,7 +101,7 @@ def prepare_models(cfg: CfgNode,
     Args:
         rank: Process rank. 0 == main process
     Return:
-        models: Dict containing coarse model, and fine model
+        models: Dict containing embedding model and NeRF model
         latent_codes: List containing latent codes for
                       each object style in a semantic category defined by the dataset
 
@@ -107,33 +111,26 @@ def prepare_models(cfg: CfgNode,
         rank = dist.get_rank()
 
     models = OrderedDict()
-    models['coarse'] = getattr(network_arch, cfg.models.coarse.type)(
-        hidden_size=cfg.models.coarse.hidden_size,
+    models['embedding'] = network_arch.ShapeTextureEmbedding(
         num_embeddings=num_objects,
-        shape_code_size=cfg.models.coarse.shape_code_size,
-        texture_code_size=cfg.models.coarse.texture_code_size,
+        shape_code_size=cfg.models.embedding.shape_code_size,
+        texture_code_size=cfg.models.embedding.texture_code_size,
+    ).to(rank)
+
+    models['nerf'] = getattr(network_arch, cfg.models.nerf.type)(
+        hidden_size=cfg.models.nerf.hidden_size,
+        num_embeddings=num_objects,
+        shape_code_size=cfg.models.embedding.shape_code_size,
+        texture_code_size=cfg.models.embedding.texture_code_size,
         num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
         include_input_xyz=cfg.nerf.embedder.include_input_xyz,
         num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
         include_input_dir=cfg.nerf.embedder.include_input_dir,
     ).to(rank)
 
-    if hasattr(cfg.models, "fine"):
-        models['fine'] = getattr(network_arch, cfg.models.fine.type)(
-            hidden_size=cfg.models.fine.hidden_size,
-            num_embeddings=num_objects,
-            shape_code_size=cfg.models.fine.shape_code_size,
-            texture_code_size=cfg.models.fine.texture_code_size,
-            num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
-            include_input_xyz=cfg.nerf.embedder.include_input_xyz,
-            num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
-            include_input_dir=cfg.nerf.embedder.include_input_dir,
-        ).to(rank)
-
     if cfg.is_distributed:
-        models["coarse"] = ddp(models['coarse'], device_ids=[rank], output_device=rank)
-        if hasattr(cfg.models, "fine"):
-            models["fine"] = ddp(models['fine'], device_ids=[rank], output_device=rank)
+        models["embedding"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
+        models["nerf"] = ddp(models['nerf'], device_ids=[rank], output_device=rank)
 
     return models
 
@@ -148,6 +145,7 @@ def prepare_optimizer(cfg: CfgNode, models: "OrderedDict[str, torch.nn.Module]")
     trainable_params = []
     for model_name, model in models.items():
         trainable_params += list(model.parameters())
+
     optimizer = getattr(torch.optim, cfg.optimizer.type)(
         trainable_params,
         lr=cfg.optimizer.lr
@@ -224,7 +222,7 @@ def nerf_forward_pass(model: torch.nn.Module,
                       embedders: List[Union[PositionalEmbedder, None]],
                       rd: Union[torch.Tensor, None],
                       pts: torch.Tensor,
-                      object_id: torch.Tensor
+                      object_embedding: Tuple[torch.Tensor, torch.Tensor]
                       ) -> torch.Tensor:
     """
     One forward pass through NeRF given a batch of rays:
@@ -236,16 +234,17 @@ def nerf_forward_pass(model: torch.nn.Module,
         embedders: List of embedding functions
         rd: torch.Tensor ray directions  chunksize x 3 | None, if none embedder_dir is not used
         pts: torch.Tensor chunksize x num_samples x 3
-        object_ids: torch.Tensor containing target_object_ids to index the latent codes
+        object_embedding: torch.Tensor containing indexed latent codes
 
     Returns:
         Radiance field: (chunksize x num_samples) x 4
 
     """
     num_rays, num_samples = pts.shape[0], pts.shape[1]
-    pts_flat = pts.reshape(-1, 3)
-    object_ids = object_id.repeat(1, num_samples)
-    object_ids = object_ids.reshape(-1)
+    [shape_embedding, texture_embedding] = object_embedding
+    shape_embedding, texture_embedding = shape_embedding[:, None, :].expand(-1, num_samples, -1), texture_embedding[:, None, :].expand(-1, num_samples, -1)
+    shape_embedding, texture_embedding = shape_embedding.reshape(-1, shape_embedding.shape[-1]), texture_embedding.reshape(-1, texture_embedding.shape[-1])
+    pts_flat = pts.reshape(-1, pts.shape[-1])
 
     embedder_xyz, embedder_dir = embedders
     embedded = embedder_xyz.embed(pts_flat)
@@ -257,7 +256,7 @@ def nerf_forward_pass(model: torch.nn.Module,
         embedded_dirs = embedder_dir.embed(input_dirs_flat)
         embedded = torch.cat((embedded, embedded_dirs), dim=-1)
 
-    radiance_field = model(object_ids, embedded)
+    radiance_field = model(shape_embedding, texture_embedding, embedded)
     radiance_field = radiance_field.reshape([num_rays, num_samples, radiance_field.shape[-1]])
     return radiance_field
 
@@ -290,22 +289,18 @@ def train(rank: int, cfg: CfgNode) -> None:
 
     # Prepare Model, Optimizer, and load checkpoint
     models = prepare_models(cfg, dataset.num_objects)
-
     optimizer, scheduler = prepare_optimizer(cfg, models)
     start_iter = load_checkpoint(cfg, models, optimizer)
 
     # Prepare RaySampler
     first_data_sample = next(iter(train_dataloader))
-    (height, width), intrinsic, datatype = first_data_sample["color"][0].shape[
-        :2], first_data_sample["intrinsic"][0], first_data_sample["intrinsic"][0].dtype
+    (height, width), intrinsic, datatype = first_data_sample["color"][0].shape[:2], first_data_sample["intrinsic"][0], first_data_sample["intrinsic"][0].dtype
 
     ray_sampler = RaySampler(height,
                              width,
                              intrinsic,
                              sample_size=cfg.nerf.ray_sampler.num_random_rays,
                              device=device)
-
-    # TODO: For validation point sampler must not perturb the points
     point_sampler = PointSampler(cfg.nerf.point_sampler.num_coarse,
                                  cfg.nerf.point_sampler.num_fine,
                                  cfg.nerf.point_sampler.near_limit,
@@ -323,7 +318,7 @@ def train(rank: int, cfg: CfgNode) -> None:
     for iteration in range(start_iter, total_load_iterations):
 
         for _, model in models.items():
-            model = model.train()
+            model.train()
 
         if cfg.is_distributed:
             train_dataloader.sampler.set_epoch(iteration)
@@ -333,6 +328,7 @@ def train(rank: int, cfg: CfgNode) -> None:
             if torch.is_tensor(value):
                 train_data[key] = train_data[key].to(device, non_blocking=True)
 
+        # Load a sample of rays and target pixels from data
         ro_batch, rd_batch, select_inds = ray_sampler.sample(tform_cam2world=train_data["pose"])
         tgt_pixel_batch = train_data["color"].flatten(1, 2)
         tgt_object_ids_batch = train_data["object_id"].repeat(1, cfg.nerf.ray_sampler.num_random_rays)
@@ -341,60 +337,33 @@ def train(rank: int, cfg: CfgNode) -> None:
 
         msg = "Chunksize needs to atleast be less than to the number of rays sampled from a single image"
         assert cfg.nerf.train.chunksize <= cfg.nerf.ray_sampler.num_random_rays * cfg.dataset.train_batch_size, msg
-        ro_minibatches = get_minibatches(ro_batch, cfg.nerf.train.chunksize)
-        rd_minibatches = get_minibatches(rd_batch, cfg.nerf.train.chunksize)
+        ro_minibatches, rd_minibatches = get_minibatches(ro_batch, cfg.nerf.train.chunksize), get_minibatches(rd_batch, cfg.nerf.train.chunksize)
         tgt_pixel_minibatches = get_minibatches(tgt_pixel_batch, cfg.nerf.train.chunksize)
         tgt_object_ids_minibatches = get_minibatches(tgt_object_ids_batch, cfg.nerf.train.chunksize)
 
         num_batches = len(ro_minibatches)
         msg = "Mismatch in batch length of ray origins, ray directions and target pixels"
-        assert num_batches == len(rd_minibatches) == len(tgt_pixel_minibatches), msg
+        assert num_batches == len(rd_minibatches) == len(tgt_pixel_minibatches) == len(tgt_object_ids_minibatches), msg
 
         for j, (ro, rd, target_object_ids, target_pixels) in enumerate(zip(ro_minibatches, rd_minibatches, tgt_object_ids_minibatches, tgt_pixel_minibatches)):
             then = time.time()
 
-            # Pass through coarse model
-            pts_coarse, z_vals_coarse = point_sampler.sample_uniform(ro, rd)
-            radiance_field_coarse = nerf_forward_pass(models["coarse"], embedders, rd, pts_coarse, target_object_ids)
-            (rgb_coarse, _, _, weights, _) = volume_render(radiance_field_coarse,
-                                                           z_vals_coarse,
-                                                           rd,
-                                                           radiance_field_noise_std=cfg.nerf.train.radiance_field_noise_std,
-                                                           white_background=cfg.nerf.white_background)
+            # Pass through nerf model
+            pts, z_vals = point_sampler.sample_uniform(ro, rd)
+            target_object_embedding = models["embedding"](target_object_ids)
+            radiance_field = nerf_forward_pass(models["nerf"], embedders, rd, pts, target_object_embedding)
+            (rgb, _, _, weights, _) = volume_render(radiance_field,
+                                                    z_vals,
+                                                    rd,
+                                                    radiance_field_noise_std=cfg.nerf.train.radiance_field_noise_std,
+                                                    white_background=cfg.nerf.white_background)
 
-            coarse_loss = torch.nn.functional.mse_loss(rgb_coarse[..., :3], target_pixels[..., :3])
-            shape_embedding_params = models["coarse"].module.shape_embedding.parameters(
-            ) if cfg.is_distributed else models["coarse"].shape_embedding.parameters()
-            texture_embedding_params = models["coarse"].module.texture_embedding.parameters(
-            ) if cfg.is_distributed else models["coarse"].texture_embedding.parameters()
-            coarse_shape_embedding = torch.cat([x.view(-1) for x in shape_embedding_params])
-            coarse_texture_embedding = torch.cat([x.view(-1) for x in texture_embedding_params])
-            embedding_coarse_regularization = cfg.experiment.regularizer_lambda * (torch.norm(coarse_shape_embedding) + torch.norm(coarse_texture_embedding))
-            psnr = mse2psnr(coarse_loss.item())
-            coarse_loss = coarse_loss + embedding_coarse_regularization
-
-            # Pass through fine model
-            fine_loss = None
-            if hasattr(cfg.models, "fine"):
-                pts_fine, z_vals_fine = point_sampler.sample_pdf(ro, rd, weights[..., 1:-1], z_vals_coarse)
-                radiance_field_fine = nerf_forward_pass(models["fine"], embedders, rd, pts_fine, target_object_ids)
-                (rgb_fine, _, _, _, _) = volume_render(radiance_field_fine,
-                                                       z_vals_fine,
-                                                       rd,
-                                                       radiance_field_noise_std=cfg.nerf.train.radiance_field_noise_std,
-                                                       white_background=cfg.nerf.white_background)
-
-                fine_loss = torch.nn.functional.mse_loss(rgb_fine[..., :3], target_pixels[..., :3])
-                shape_embedding_params = models["fine"].module.shape_embedding.parameters(
-                ) if cfg.is_distributed else models["fine"].shape_embedding.parameters()
-                texture_embedding_params = models["fine"].module.texture_embedding.parameters(
-                ) if cfg.is_distributed else models["fine"].texture_embedding.parameters()
-                fine_shape_embedding = torch.cat([x.view(-1) for x in shape_embedding_params])
-                fine_texture_embedding = torch.cat([x.view(-1) for x in texture_embedding_params])
-                psnr = mse2psnr(fine_loss.item())
-                fine_loss = fine_loss + cfg.experiment.regularizer_lambda * (torch.norm(fine_shape_embedding) + torch.norm(fine_texture_embedding))
-
-            loss = coarse_loss + (fine_loss if fine_loss is not None else 0.0)
+            nerf_loss = torch.nn.functional.mse_loss(rgb[..., :3], target_pixels[..., :3])
+            embedding_params = models['embedding'].parameters()
+            embedding_params = torch.cat([x.view(-1) for x in embedding_params])
+            embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(embedding_params) + torch.norm(embedding_params))
+            psnr = mse2psnr(nerf_loss.item())
+            loss = nerf_loss + embedding_regularization
 
             optimizer.zero_grad()
             loss.backward()
@@ -404,25 +373,25 @@ def train(rank: int, cfg: CfgNode) -> None:
             i = iteration * num_batches + j
 
             if is_main_process(cfg.is_distributed) and i % cfg.experiment.print_every == 0:
-                writer.add_scalar("train/coarse_loss", coarse_loss.item(), i)
+                writer.add_scalar("train/nerf_loss", nerf_loss.item(), i)
+                writer.add_scalar("train/embedding_loss", embedding_regularization.item(), i)
                 writer.add_scalar("train/psnr", psnr, i)
                 writer.add_scalar("train/learning_rate", scheduler.get_last_lr()[0], i)
+                writer.add_images("train/target_image", train_data["color"][..., :3], i, dataformats='NHWC')
 
                 log_string = f"[TRAIN] Iter: {i:>8} "
                 log_string += f"Load Iter: {iteration:>8} Time taken: {time.time()-then:>4.4f} "
-                log_string += f"Learning rate: {scheduler.get_last_lr()[0]:0.8f} Coarse Loss: {coarse_loss.item():>4.4f} "
-                if hasattr(cfg.models, "fine"):
-                    writer.add_scalar("train/fine_loss", fine_loss.item(), i)
-                    log_string += f"Fine Loss: {fine_loss.item():>4.4f} "
+                log_string += f"Learning rate: {scheduler.get_last_lr()[0]:0.8f} NeRF Loss: {nerf_loss.item():>4.4f} "
+                log_string += f"Regularization Loss: {embedding_regularization.item():>4.4f} "
+                log_string += f"Total Loss: {loss.item():>4.4f} "
                 log_string += f"PSNR: {psnr:>4.4f}"
-                writer.add_images("train/target_image", train_data["color"][..., :3], i, dataformats='NHWC')
                 print(log_string)
 
-            if (is_main_process(cfg.is_distributed) and i > 0 and i % cfg.experiment.save_every == 0) or i == cfg.experiment.iterations - 1:
+            if is_main_process(cfg.is_distributed) and (i > 0 and i % cfg.experiment.save_every == 0 or i == cfg.experiment.iterations - 1):
                 checkpoint_dict = {
                     "iter": i,
-                    "model_coarse_state_dict": models["coarse"].state_dict(),
-                    "model_fine_state_dict": None if not hasattr(models, "fine") else models["fine"].state_dict(),
+                    "model_nerf_state_dict": models["nerf"].state_dict(),
+                    "model_embedding_state_dict": models["embedding"].state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                 }
                 torch.save(checkpoint_dict, logdir_path / f"checkpoint{i:5d}.ckpt")
@@ -453,8 +422,7 @@ def validate(cfg: CfgNode,
     Args:
         Self-explanatory
     Returns:
-        rgb_coarse: torch.Tensor NCHW,
-        rgb_fine: torch.Tensor NCHW
+        None
 
     """
     if cfg.is_distributed:
@@ -473,53 +441,97 @@ def validate(cfg: CfgNode,
         if torch.is_tensor(val):
             val_data[key] = val_data[key].to(device)
 
-    val_then = time.time()
-    rgb_coarse, rgb_fine = parallel_image_render(val_data["pose"],
-                                                 val_data["object_id"],
-                                                 cfg,
-                                                 models,
-                                                 ray_sampler,
-                                                 point_sampler,
-                                                 embedders,
-                                                 device)
+    if cfg.is_distributed:
+        all_shape_embedding, all_texture_embedding = models["embedding"].module.get_all_embeddings(device=device)
+    else:
+        all_shape_embedding, all_texture_embedding = models["embedding"].get_all_embeddings(device=device)
+
+    shape_embedding = all_shape_embedding.mean(dim=0, keepdim=True).detach().clone()
+    texture_embedding = all_texture_embedding.mean(dim=0, keepdim=True).detach().clone()
+    optimizer = getattr(torch.optim, cfg.optimizer.val_type)(
+        [shape_embedding, texture_embedding],
+        lr=cfg.optimizer.val_lr,
+    )
+
+    for val_iter in range(0, cfg.experiment.val_iterations):
+        val_then = time.time()
+
+        ro_batch, rd_batch, select_inds = ray_sampler.sample(tform_cam2world=val_data["pose"])
+        tgt_pixel_batch = val_data["color"].flatten(1, 2)
+        shape_embedding_batch, texture_embedding_batch = shape_embedding.expand(ro_batch.shape[0], -1), texture_embedding.expand(ro_batch.shape[0], -1)
+        tgt_pixel_batch = [tgt_pixel_batch[k, select_inds[k], :] for k in range(cfg.dataset.val_batch_size)]
+        tgt_pixel_batch = torch.cat(tgt_pixel_batch, dim=0)
+
+        msg = "Chunksize needs to atleast be less than to the number of rays sampled from a single image"
+        assert cfg.nerf.validation.chunksize <= cfg.nerf.ray_sampler.num_random_rays * cfg.dataset.val_batch_size, msg
+        ro_minibatches, rd_minibatches = get_minibatches(ro_batch, cfg.nerf.validation.chunksize), get_minibatches(rd_batch, cfg.nerf.validation.chunksize)
+        tgt_pixel_minibatches = get_minibatches(tgt_pixel_batch, cfg.nerf.validation.chunksize)
+
+        num_batches = len(ro_minibatches)
+        msg = "Mismatch in batch length of ray origins, ray directions and target pixels"
+        assert num_batches == len(rd_minibatches) == len(tgt_pixel_minibatches), msg
+
+        for j, (ro, rd, target_pixels) in enumerate(zip(ro_minibatches, rd_minibatches, tgt_pixel_minibatches)):
+
+            # Pass through NeRF model
+            pts, z_vals = point_sampler.sample_uniform(ro, rd)
+            radiance_field = nerf_forward_pass(models["nerf"], embedders, rd, pts, [shape_embedding_batch, texture_embedding_batch])
+            (rgb, _, _, weights, _) = volume_render(radiance_field,
+                                                    z_vals,
+                                                    rd,
+                                                    radiance_field_noise_std=cfg.nerf.train.radiance_field_noise_std,
+                                                    white_background=cfg.nerf.white_background)
+
+            nerf_loss = torch.nn.functional.mse_loss(rgb[..., :3], target_pixels[..., :3])
+            embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(shape_embedding) + torch.norm(texture_embedding))
+            psnr = mse2psnr(nerf_loss.item())
+            loss = nerf_loss + embedding_regularization
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        if is_main_process(cfg.is_distributed) and val_iter > 0 and val_iter % cfg.experiment.val_print_every == 0:
+            writer.add_scalar("val_optimization/nerf_loss", nerf_loss.item(), val_iter)
+            writer.add_scalar("val_optimization/psnr", psnr, val_iter)
+            writer.add_images("val_optimization/target_image", val_data["color"][..., :3], i, dataformats='NHWC')
+
+            log_string = f"[VAL OPTIM] ValIter: {val_iter:>8} "
+            log_string += f"Time taken: {time.time()-val_then:>4.4f} "
+            log_string += f"NeRF Loss: {nerf_loss.item():>4.4f} "
+            log_string += f"Regularization Loss: {embedding_regularization.item():>4.4f} "
+            log_string += f"Total Loss: {loss.item():>4.4f} "
+            log_string += f"PSNR: {psnr:>4.4f}"
+            print(log_string)
+
+    rgb = parallel_image_render(val_data["pose"],
+                                [shape_embedding, texture_embedding],
+                                cfg,
+                                models,
+                                ray_sampler,
+                                point_sampler,
+                                embedders,
+                                device)
 
     if is_main_process(cfg.is_distributed):
-        assert rgb_coarse is not None, "Main process must contain rgb_coarse"
-        if hasattr(cfg.models, "fine"):
-            assert rgb_fine is not None, "Main process must contain rgb_fine"
-
+        assert rgb is not None, "Main process must contain rgb"
         target_pixels = val_data["color"].view(-1, 4)
-        coarse_loss = torch.nn.functional.mse_loss(rgb_coarse[..., : 3], target_pixels[..., : 3])
-        loss = coarse_loss
-        psnr = mse2psnr(coarse_loss.item())
+        loss = torch.nn.functional.mse_loss(rgb[..., : 3], target_pixels[..., : 3])
+        psnr = mse2psnr(loss.item())
 
         target_rgb = target_pixels.reshape(list(val_data["color"].shape[: -1]) + [4])
-        rgb_coarse = rgb_coarse.reshape(list(val_data["color"].shape[: -1]) + [rgb_coarse.shape[-1]])
+        rgb = rgb.reshape(list(val_data["color"].shape[: -1]) + [rgb.shape[-1]])
+        writer.add_scalar("val/loss", loss, i)
+        writer.add_images("val/rgb_image", rgb[..., : 3], i, dataformats='NHWC')
+        writer.add_images("val/target_image", target_rgb[..., : 3], i, dataformats='NHWC')
 
-        writer.add_scalar("val/coarse_loss", coarse_loss, i)
-        writer.add_images(
-            "val/rgb_coarse_image", rgb_coarse[..., : 3], i, dataformats='NHWC'
-        )
-        writer.add_images(
-            "val/target_image", target_rgb[..., : 3], i, dataformats='NHWC'
-        )
-
-        if hasattr(cfg.models, "fine"):
-            fine_loss = torch.nn.functional.mse_loss(rgb_fine[..., : 3], target_pixels[..., : 3])
-            loss += fine_loss
-            psnr = mse2psnr(fine_loss.item())
-            rgb_fine = rgb_fine.reshape(list(val_data["color"].shape[: -1]) + [rgb_fine.shape[-1]])
-            writer.add_scalar("val/fine_loss", fine_loss, i)
-            writer.add_images(
-                "val/rgb_fine_image", rgb_fine[..., : 3], i, dataformats='NHWC'
-            )
         log_string = f"[VAL  ] Iter: {i:>8} Iteration: {iteration:>8} "
         log_string += f"Time taken: {time.time() - val_then:>4.4f} Loss: {loss.item():>4.4f} PSNR: {psnr:>4.4f}"
         print(log_string)
 
 
 def parallel_image_render(pose: torch.Tensor,
-                          object_ids: torch.Tensor,
+                          object_embedding: Tuple[torch.Tensor, torch.Tensor],
                           cfg: CfgNode,
                           models: "OrderedDict[torch.nn.Module, torch.nn.Module]",
                           ray_sampler: RaySampler,
@@ -540,7 +552,9 @@ def parallel_image_render(pose: torch.Tensor,
         ray_origins, ray_directions = ray_sampler.get_bundle(tform_cam2world=pose)
         ro, rd = ray_origins.reshape(-1, 3), ray_directions.reshape(-1, 3)
         num_rays = ro.shape[0]
-        object_ids = object_ids.repeat(num_rays)
+        [shape_embedding, texture_embedding] = object_embedding
+        shape_embedding = shape_embedding.expand(num_rays, -1)
+        texture_embedding = texture_embedding.expand(num_rays, -1)
 
         batchsize_per_process = torch.full([cfg.gpus], (num_rays / cfg.gpus), dtype=int)
         padding = num_rays - torch.sum(batchsize_per_process)
@@ -555,75 +569,50 @@ def parallel_image_render(pose: torch.Tensor,
         # Only use the split of the rays for the current process
         ro_batch = torch.split(ro, batchsize_per_process.tolist())[rank].to(device)
         rd_batch = torch.split(rd, batchsize_per_process.tolist())[rank].to(device)
-        object_ids_batch = torch.split(object_ids, batchsize_per_process.tolist())[rank].to(device)
+        shape_embedding_batch = torch.split(shape_embedding, batchsize_per_process.tolist())[rank].to(device)
+        texture_embedding_batch = torch.split(texture_embedding, batchsize_per_process.tolist())[rank].to(device)
 
         # Minibatch the rays allocated to current process
         ro_minibatches = get_minibatches(ro_batch, cfg.nerf.validation.chunksize)
         rd_minibatches = get_minibatches(rd_batch, cfg.nerf.validation.chunksize)
-        object_ids_minibatches = get_minibatches(object_ids_batch, cfg.nerf.validation.chunksize)
+        shape_embedding_minibatches = get_minibatches(shape_embedding_batch, cfg.nerf.validation.chunksize)
+        texture_embedding_minibatches = get_minibatches(texture_embedding_batch, cfg.nerf.validation.chunksize)
 
-        rgb_coarse_batches, rgb_fine_batches = [], []
-        for ro, rd, object_ids in zip(ro_minibatches, rd_minibatches, object_ids_minibatches):
+        rgb_batches = []
+        for ro, rd, z_s, z_t in zip(ro_minibatches, rd_minibatches, shape_embedding_minibatches, texture_embedding_minibatches):
 
-            # Pass through coarse model
-            pts_coarse, z_vals_coarse = point_sampler.sample_uniform(ro, rd)
+            # Pass through NeRF model
+            pts, z_vals = point_sampler.sample_uniform(ro, rd)
 
-            radiance_field_coarse = nerf_forward_pass(models["coarse"], embedders, rd, pts_coarse, object_ids)
-            (rgb_coarse, _, _, weights, _) = volume_render(radiance_field_coarse,
-                                                           z_vals_coarse,
-                                                           rd,
-                                                           radiance_field_noise_std=cfg.nerf.validation.radiance_field_noise_std,
-                                                           white_background=cfg.nerf.white_background)
-            rgb_coarse_batches.append(rgb_coarse)
+            radiance_field = nerf_forward_pass(models["nerf"], embedders, rd, pts, [z_s, z_t])
+            (rgb, _, _, weights, _) = volume_render(radiance_field,
+                                                    z_vals,
+                                                    rd,
+                                                    radiance_field_noise_std=cfg.nerf.validation.radiance_field_noise_std,
+                                                    white_background=cfg.nerf.white_background)
+            rgb_batches.append(rgb)
 
-            # Pass through fine model
-            if hasattr(cfg.models, "fine"):
-                pts_fine, z_vals_fine = point_sampler.sample_pdf(ro, rd, weights[..., 1: -1], z_vals_coarse)
-                radiance_field_fine = nerf_forward_pass(models["fine"], embedders, rd, pts_fine, object_ids)
-                (rgb_fine, _, _, weights, _) = volume_render(radiance_field_fine,
-                                                             z_vals_fine,
-                                                             rd,
-                                                             radiance_field_noise_std=cfg.nerf.validation.radiance_field_noise_std,
-                                                             white_background=cfg.nerf.white_background)
-                rgb_fine_batches.append(rgb_fine)
-
-        rgb_coarse_batches = torch.cat(rgb_coarse_batches, dim=0)
-        if hasattr(cfg.models, "fine"):
-            rgb_fine_batches = torch.cat(rgb_fine_batches, dim=0)
+        rgb_batches = torch.cat(rgb_batches, dim=0)
 
         if not cfg.is_distributed:
-            return rgb_coarse_batches, rgb_fine_batches
+            return rgb_batches
 
         # Pad image chunks to get equal chunksize for all_gather/gather
-        padded_rgb_coarse = torch.zeros((padding_per_process[rank], rgb_coarse_batches.shape[-1]),
-                                        dtype=rgb_coarse_batches.dtype,
-                                        device=rgb_coarse_batches.device)
-        rgb_coarse_batches = torch.cat([rgb_coarse_batches, padded_rgb_coarse], dim=0)
-        all_rgb_coarse_batches = [torch.zeros_like(rgb_coarse_batches) for _ in range(cfg.gpus)]
-        torch.distributed.all_gather(all_rgb_coarse_batches, rgb_coarse_batches)
-
-        all_rgb_fine_batches = None
-        if hasattr(cfg.models, "fine"):
-            padded_rgb_fine = torch.zeros((padding_per_process[rank], rgb_fine_batches.shape[-1]),
-                                          dtype=rgb_fine_batches.dtype,
-                                          device=rgb_fine_batches.device)
-            rgb_fine_batches = torch.cat([rgb_fine_batches, padded_rgb_fine], dim=0)
-            all_rgb_fine_batches = [torch.zeros_like(rgb_fine_batches) for _ in range(cfg.gpus)]
-            torch.distributed.all_gather(all_rgb_fine_batches, rgb_fine_batches)
+        padded_rgb = torch.zeros((padding_per_process[rank], rgb_batches.shape[-1]),
+                                 dtype=rgb_batches.dtype,
+                                 device=rgb_batches.device)
+        rgb = torch.cat([rgb_batches, padded_rgb], dim=0)
+        all_rgb_batches = [torch.zeros_like(rgb_batches) for _ in range(cfg.gpus)]
+        torch.distributed.all_gather(all_rgb_batches, rgb_batches)
 
         if is_main_process(cfg.is_distributed):
             for i, size in enumerate(batchsize_per_process):
-                all_rgb_coarse_batches[i] = all_rgb_coarse_batches[i][: size, ...]
-            all_rgb_coarse_batches = torch.cat(all_rgb_coarse_batches, dim=0)
+                all_rgb_batches[i] = all_rgb_batches[i][: size, ...]
+            all_rgb_batches = torch.cat(all_rgb_batches, dim=0)
 
-            if hasattr(cfg.models, "fine"):
-                for i, size in enumerate(batchsize_per_process):
-                    all_rgb_fine_batches[i] = all_rgb_fine_batches[i][: size, ...]
-                all_rgb_fine_batches = torch.cat(all_rgb_fine_batches, dim=0)
-
-            return all_rgb_coarse_batches, all_rgb_fine_batches
+            return all_rgb_batches
         else:
-            return None, None
+            return None
 
 
 def init_process(rank: int, fn: FunctionType, cfg: CfgNode, backend: str = "gloo"):
