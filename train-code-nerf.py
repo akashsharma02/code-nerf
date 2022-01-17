@@ -48,6 +48,7 @@ def prepare_dataloader(cfg: CfgNode
 
     train_size = int(len(dataset) * 0.75)
     val_size = len(dataset) - train_size
+
     train_dataset, val_dataset = torch.utils.data.random_split(
         dataset, [train_size, val_size])
 
@@ -325,7 +326,8 @@ def train(rank: int, cfg: CfgNode) -> None:
             model = model.train()
 
         if cfg.is_distributed:
-            train_dataloader.sampler.set_epoch(0)
+            train_dataloader.sampler.set_epoch(iteration)
+
         train_data = next(iter(train_dataloader))
         for key, value in train_data.items():
             if torch.is_tensor(value):
@@ -361,8 +363,12 @@ def train(rank: int, cfg: CfgNode) -> None:
                                                            white_background=cfg.nerf.white_background)
 
             coarse_loss = torch.nn.functional.mse_loss(rgb_coarse[..., :3], target_pixels[..., :3])
-            coarse_shape_embedding = torch.cat([x.view(-1) for x in models["coarse"].shape_embedding.parameters()])
-            coarse_texture_embedding = torch.cat([x.view(-1) for x in models["coarse"].texture_embedding.parameters()])
+            shape_embedding_params = models["coarse"].module.shape_embedding.parameters(
+            ) if cfg.is_distributed else models["coarse"].shape_embedding.parameters()
+            texture_embedding_params = models["coarse"].module.texture_embedding.parameters(
+            ) if cfg.is_distributed else models["coarse"].texture_embedding.parameters()
+            coarse_shape_embedding = torch.cat([x.view(-1) for x in shape_embedding_params])
+            coarse_texture_embedding = torch.cat([x.view(-1) for x in texture_embedding_params])
             embedding_coarse_regularization = cfg.experiment.regularizer_lambda * (torch.norm(coarse_shape_embedding) + torch.norm(coarse_texture_embedding))
             psnr = mse2psnr(coarse_loss.item())
             coarse_loss = coarse_loss + embedding_coarse_regularization
@@ -379,12 +385,16 @@ def train(rank: int, cfg: CfgNode) -> None:
                                                        white_background=cfg.nerf.white_background)
 
                 fine_loss = torch.nn.functional.mse_loss(rgb_fine[..., :3], target_pixels[..., :3])
-                fine_shape_embedding = torch.cat([x.view(-1) for x in models["fine"].shape_embedding.parameters()])
-                fine_texture_embedding = torch.cat([x.view(-1) for x in models["fine"].texture_embedding.parameters()])
+                shape_embedding_params = models["fine"].module.shape_embedding.parameters(
+                ) if cfg.is_distributed else models["fine"].shape_embedding.parameters()
+                texture_embedding_params = models["fine"].module.texture_embedding.parameters(
+                ) if cfg.is_distributed else models["fine"].texture_embedding.parameters()
+                fine_shape_embedding = torch.cat([x.view(-1) for x in shape_embedding_params])
+                fine_texture_embedding = torch.cat([x.view(-1) for x in texture_embedding_params])
                 psnr = mse2psnr(fine_loss.item())
                 fine_loss = fine_loss + cfg.experiment.regularizer_lambda * (torch.norm(fine_shape_embedding) + torch.norm(fine_texture_embedding))
 
-            loss = coarse_loss + fine_loss
+            loss = coarse_loss + (fine_loss if fine_loss is not None else 0.0)
 
             optimizer.zero_grad()
             loss.backward()
@@ -400,12 +410,12 @@ def train(rank: int, cfg: CfgNode) -> None:
 
                 log_string = f"[TRAIN] Iter: {i:>8} "
                 log_string += f"Load Iter: {iteration:>8} Time taken: {time.time()-then:>4.4f} "
-                log_string += f"Object Index: {train_data['object_id'].item()} "
                 log_string += f"Learning rate: {scheduler.get_last_lr()[0]:0.8f} Coarse Loss: {coarse_loss.item():>4.4f} "
                 if hasattr(cfg.models, "fine"):
                     writer.add_scalar("train/fine_loss", fine_loss.item(), i)
                     log_string += f"Fine Loss: {fine_loss.item():>4.4f} "
                 log_string += f"PSNR: {psnr:>4.4f}"
+                writer.add_images("train/target_image", train_data["color"][..., :3], i, dataformats='NHWC')
                 print(log_string)
 
             if (is_main_process(cfg.is_distributed) and i > 0 and i % cfg.experiment.save_every == 0) or i == cfg.experiment.iterations - 1:
@@ -420,11 +430,12 @@ def train(rank: int, cfg: CfgNode) -> None:
 
             # Parallel rendering of image for Validation
             if (i > 0 and i % cfg.experiment.validate_every == 0):
-                validate(iteration, i, val_dataloader, models,
+                validate(cfg, iteration, i, val_dataloader, models,
                          ray_sampler, point_sampler, embedders, writer, device)
 
 
-def validate(iteration: int,
+def validate(cfg: CfgNode,
+             iteration: int,
              i: int,
              dataloader: torch.utils.data.DataLoader,
              models: "OrderedDict[torch.nn.Module, torch.nn.Module]",
@@ -447,7 +458,7 @@ def validate(iteration: int,
 
     """
     if cfg.is_distributed:
-        dataloader.sampler.set_epoch(0)
+        dataloader.sampler.set_epoch(iteration)
 
     # Load data independently in all processes as a list of tuples
     val_data = next(iter(dataloader))
