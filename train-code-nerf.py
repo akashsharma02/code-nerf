@@ -142,13 +142,11 @@ def prepare_optimizer(cfg: CfgNode, models: "OrderedDict[str, torch.nn.Module]")
     :returns: TODO
 
     """
-    trainable_params = []
-    for model_name, model in models.items():
-        trainable_params += list(model.parameters())
 
-    optimizer = getattr(torch.optim, cfg.optimizer.type)(
-        trainable_params,
-        lr=cfg.optimizer.lr
+    optimizer = getattr(torch.optim, cfg.optimizer.type)([
+        {'params': models['nerf'].parameters()},
+        {'params': models['embedding'].parameters(), 'lr': cfg.optimizer.embedding_lr}
+    ], lr=cfg.optimizer.lr
     )
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -359,16 +357,20 @@ def train(rank: int, cfg: CfgNode) -> None:
                                                     white_background=cfg.nerf.white_background)
 
             nerf_loss = torch.nn.functional.mse_loss(rgb[..., :3], target_pixels[..., :3])
-            embedding_params = models['embedding'].parameters()
-            embedding_params = torch.cat([x.view(-1) for x in embedding_params])
-            embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(embedding_params) + torch.norm(embedding_params))
+            shape_embedding_params, texture_embedding_params = None, None
+            for name, params in models['embedding'].named_parameters():
+                if 'shape' in name:
+                    shape_embedding_params = torch.cat([x.view(-1) for x in params.data])
+                if 'texture' in name:
+                    texture_embedding_params = torch.cat([x.view(-1) for x in params.data])
+            embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(shape_embedding_params, p=2) + torch.norm(texture_embedding_params, p=2))
             psnr = mse2psnr(nerf_loss.item())
             loss = nerf_loss + embedding_regularization
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
 
             i = iteration * num_batches + j
 
@@ -466,24 +468,25 @@ def validate(cfg: CfgNode,
         assert cfg.nerf.validation.chunksize <= cfg.nerf.ray_sampler.num_random_rays * cfg.dataset.val_batch_size, msg
         ro_minibatches, rd_minibatches = get_minibatches(ro_batch, cfg.nerf.validation.chunksize), get_minibatches(rd_batch, cfg.nerf.validation.chunksize)
         tgt_pixel_minibatches = get_minibatches(tgt_pixel_batch, cfg.nerf.validation.chunksize)
+        z_s_minibatches = get_minibatches(shape_embedding_batch, cfg.nerf.validation.chunksize)
+        z_t_minibatches = get_minibatches(texture_embedding_batch, cfg.nerf.validation.chunksize)
 
         num_batches = len(ro_minibatches)
         msg = "Mismatch in batch length of ray origins, ray directions and target pixels"
         assert num_batches == len(rd_minibatches) == len(tgt_pixel_minibatches), msg
 
-        for j, (ro, rd, target_pixels) in enumerate(zip(ro_minibatches, rd_minibatches, tgt_pixel_minibatches)):
+        for j, (ro, rd, target_pixels, z_s, z_t) in enumerate(zip(ro_minibatches, rd_minibatches, tgt_pixel_minibatches, z_s_minibatches, z_t_minibatches)):
 
             # Pass through NeRF model
             pts, z_vals = point_sampler.sample_uniform(ro, rd)
-            radiance_field = nerf_forward_pass(models["nerf"], embedders, rd, pts, [shape_embedding_batch, texture_embedding_batch])
+            radiance_field = nerf_forward_pass(models["nerf"], embedders, rd, pts, [z_s, z_t])
             (rgb, _, _, weights, _) = volume_render(radiance_field,
                                                     z_vals,
                                                     rd,
                                                     radiance_field_noise_std=cfg.nerf.train.radiance_field_noise_std,
                                                     white_background=cfg.nerf.white_background)
-
             nerf_loss = torch.nn.functional.mse_loss(rgb[..., :3], target_pixels[..., :3])
-            embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(shape_embedding) + torch.norm(texture_embedding))
+            embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(z_s, p=2) + torch.norm(z_t, p=2))
             psnr = mse2psnr(nerf_loss.item())
             loss = nerf_loss + embedding_regularization
 

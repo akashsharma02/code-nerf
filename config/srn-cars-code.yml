@@ -1,14 +1,14 @@
 experiment:
-    id: srn-cars-code-nerf-test-time-multiobject-lambda-0.001
+    id: srn-cars-code-nerf-multiobject-lambda-1.0-64-samples
     logdir: logs
-    randomseed: 42
+    randomseed: 55
     iterations: 1000000
     val_iterations: 300
     validate_every: 1000
     save_every: 5000
     print_every: 100
     val_print_every: 100
-    regularizer_lambda: 0.001
+    regularizer_lambda: 1.0
 
 dataset:
     type: SRNDataset
@@ -30,17 +30,18 @@ models:
 
 optimizer:
     type: AdamW
-    lr: 5.0E-4
+    lr: 1.0E-4
+    embedding_lr: 1.0E-3
     val_type: AdamW
-    val_lr: 1.0E-3
-    scheduler_gamma: 0.01
-    scheduler_step_size: 500000
+    val_lr: 1.0E-2
+    scheduler_gamma: 0.01 # No schedule
+    scheduler_step_size: 5000000
 
 nerf:
     ray_sampler:
-        num_random_rays: 8192
+        num_random_rays: 16384
     point_sampler:
-        num_coarse: 128
+        num_coarse: 64
         num_fine: 128
         near_limit: 0.8
         far_limit: 1.8
@@ -56,8 +57,8 @@ nerf:
         log_sampling_dir: True
     white_background: False
     train:
-        chunksize: 4096
+        chunksize: 12288
         radiance_field_noise_std: 0.05
     validation:
-        chunksize: 8192
+        chunksize: 12288
         radiance_field_noise_std: 0.05

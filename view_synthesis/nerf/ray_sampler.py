@@ -15,7 +15,7 @@ class RaySampler(object):
 
         """
         assert height > 0 and width > 0, "Height and width must be positive integers"
-        assert sample_size > 0 and sample_size < height * width, "Sample size must be a positive number less than height * width"
+        assert sample_size > 0 and sample_size <= height * width, "Sample size must be a positive number less than height * width"
 
         self.height = height
         self.width = width
