@@ -1,6 +1,6 @@
 experiment:
-    id: srn-cars-code-nerf-multiobject-lambda-1.0-64-samples
-    logdir: logs
+    id: cars-code-nerf-all-val-object-10-train-optimization
+    logdir: logs-new
     randomseed: 55
     iterations: 1000000
     val_iterations: 300
@@ -8,7 +8,7 @@ experiment:
     save_every: 5000
     print_every: 100
     val_print_every: 100
-    regularizer_lambda: 1.0
+    regularizer_lambda: 1.0e-5
 
 dataset:
     type: SRNDataset

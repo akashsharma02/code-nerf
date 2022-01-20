@@ -216,7 +216,13 @@ class SRNDataset(torch.utils.data.Dataset):
         super(SRNDataset, self).__init__()
         self.base_path = Path(path)
         self.dataset_name = self.base_path.stem.split("_")[-1]
-        self.base_path = self.base_path / f"{self.dataset_name}_{stage}"
+        if stage == "train":
+            self.base_path = self.base_path / f"{self.dataset_name}_val"
+        elif stage == "val":
+            self.base_path = self.base_path / f"{self.dataset_name}_train"
+        else:
+            self.base_path = self.base_path / f"{self.dataset_name}_{stage}"
+
         self.image_size = image_size
         self.world_scale = world_scale
 
@@ -233,8 +239,17 @@ class SRNDataset(torch.utils.data.Dataset):
 
         # self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[0]
         # self.intrinsic = [self.intrinsic]
-        self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
-        self.num_objects = len(self.intrinsic)
+        if stage == "train":
+            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
+            self.num_objects = len(self.intrinsic)
+        # TODO: Remove this
+        elif stage == "val":
+            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:10]
+            self.num_objects = len(self.intrinsic)
+        else:
+            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
+            self.num_objects = len(self.intrinsic)
+
         self.rgb_all_filenames, self.pose_all_filenames = [], []
         for index, intrinsic_path in enumerate(self.intrinsic):
             rgb_directory = intrinsic_path.parent / "rgb"

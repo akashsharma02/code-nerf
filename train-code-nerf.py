@@ -1,4 +1,4 @@
-from typing import List, Tuple, Union, Literal
+from typing import List, Tuple, Union
 from numpy.typing import DTypeLike
 from types import FunctionType
 import os
@@ -187,7 +187,7 @@ def load_checkpoint(cfg: CfgNode, models: "OrderedDict[str, torch.nn.Module]", o
 
         optimizer.load_state_dict(
             checkpoint["optimizer_state_dict"])
-        start_iter = checkpoint["start_iter"]
+        start_iter = checkpoint["iter"]
 
     return start_iter
 
@@ -377,6 +377,7 @@ def train(rank: int, cfg: CfgNode) -> None:
             if is_main_process(cfg.is_distributed) and i % cfg.experiment.print_every == 0:
                 writer.add_scalar("train/nerf_loss", nerf_loss.item(), i)
                 writer.add_scalar("train/embedding_loss", embedding_regularization.item(), i)
+                writer.add_scalar("train/total_loss", loss.item(), i)
                 writer.add_scalar("train/psnr", psnr, i)
                 writer.add_scalar("train/learning_rate", scheduler.get_last_lr()[0], i)
                 writer.add_images("train/target_image", train_data["color"][..., :3], i, dataformats='NHWC')
@@ -391,7 +392,7 @@ def train(rank: int, cfg: CfgNode) -> None:
 
             if is_main_process(cfg.is_distributed) and (i > 0 and i % cfg.experiment.save_every == 0 or i == cfg.experiment.iterations - 1):
                 checkpoint_dict = {
-                    "iter": i,
+                    "iter": iteration,
                     "model_nerf_state_dict": models["nerf"].state_dict(),
                     "model_embedding_state_dict": models["embedding"].state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
@@ -450,6 +451,13 @@ def validate(cfg: CfgNode,
 
     shape_embedding = all_shape_embedding.mean(dim=0, keepdim=True).detach().clone()
     texture_embedding = all_texture_embedding.mean(dim=0, keepdim=True).detach().clone()
+
+    # idx = torch.ones([1], dtype=int, device=device)
+    # if cfg.is_distributed:
+    #     shape_embedding, texture_embedding = models["embedding"].module.forward(idx)
+    # else:
+    #     shape_embedding, texture_embedding = models["embedding"].forward(idx)
+    #
     optimizer = getattr(torch.optim, cfg.optimizer.val_type)(
         [shape_embedding, texture_embedding],
         lr=cfg.optimizer.val_lr,
@@ -457,6 +465,8 @@ def validate(cfg: CfgNode,
 
     for val_iter in range(0, cfg.experiment.val_iterations):
         val_then = time.time()
+        for _, model in models.items():
+            model.eval()
 
         ro_batch, rd_batch, select_inds = ray_sampler.sample(tform_cam2world=val_data["pose"])
         tgt_pixel_batch = val_data["color"].flatten(1, 2)
