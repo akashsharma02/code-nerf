@@ -1,4 +1,3 @@
-name: view-synthesis
 channels:
   - pytorch
   - conda-forge
@@ -188,4 +187,4 @@ dependencies:
   - zipp=3.7.0=pyhd8ed1ab_0
   - zlib=1.2.11=h7f8727e_4
   - zstd=1.4.9=haebb681_0
-prefix: /home/tkhurana/anaconda3/envs/view-synthesis
+# prefix: /home/tkhurana/anaconda3/envs/view-synthesis
