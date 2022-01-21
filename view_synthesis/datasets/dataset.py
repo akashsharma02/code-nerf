@@ -237,14 +237,12 @@ class SRNDataset(torch.utils.data.Dataset):
             if tmp.exists():
                 self.base_path = tmp
 
-        # self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[0]
-        # self.intrinsic = [self.intrinsic]
         if stage == "train":
-            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
+            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:30]
             self.num_objects = len(self.intrinsic)
         # TODO: Remove this
         elif stage == "val":
-            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:10]
+            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:1]
             self.num_objects = len(self.intrinsic)
         else:
             self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
@@ -283,14 +281,18 @@ class SRNDataset(torch.utils.data.Dataset):
         rgb_image = rgb_image / 255.0
         mask_image = mask_image / 255.0
 
+        crop_height, crop_width = height//8, width//8
+        rgb_image = rgb_image[crop_width:width-crop_width, crop_height:height-crop_height, ...]
+        mask_image = mask_image[crop_width:width-crop_width, crop_height:height-crop_height, ...]
+
         pose = np.loadtxt(pose_filename).reshape(4, 4)
         pose = pose @ np.diag([1, -1, -1, 1])
 
-        if rgb_image.shape[-2:] != self.image_size:
-            scale = self.image_size[0] / rgb_image.shape[-2]
-            focal *= scale
-            cx *= scale
-            cy *= scale
+        # if rgb_image.shape[-2:] != self.image_size:
+        #     scale = self.image_size[0] / rgb_image.shape[-2]
+        #     focal *= scale
+        #     cx *= scale
+        #     cy *= scale
 
         if self.world_scale != 1.0:
             focal *= self.world_scale
@@ -298,7 +300,7 @@ class SRNDataset(torch.utils.data.Dataset):
 
         intrinsic = np.eye(4)
         intrinsic[0, 0], intrinsic[1, 1] = focal, focal
-        intrinsic[0, 2], intrinsic[1, 2] = cx, cy
+        intrinsic[0, 2], intrinsic[1, 2] = cx-crop_width, cy-crop_height
 
         sample = {
             "object_id": object_index,

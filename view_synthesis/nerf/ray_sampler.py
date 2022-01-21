@@ -1,5 +1,4 @@
-from typing import Tuple, Union, Literal
-from numpy.typing import DTypeLike
+from typing import Tuple, Union
 import numpy as np
 import torch
 

@@ -442,7 +442,7 @@ def validate(cfg: CfgNode,
 
     for key, val in val_data.items():
         if torch.is_tensor(val):
-            val_data[key] = val_data[key].to(device)
+            val_data[key] = val_data[key].to(device, non_blocking=True)
 
     if cfg.is_distributed:
         all_shape_embedding, all_texture_embedding = models["embedding"].module.get_all_embeddings(device=device)

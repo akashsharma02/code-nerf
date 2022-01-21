@@ -1,5 +1,5 @@
 experiment:
-    id: cars-code-nerf-all-val-object-10-train-optimization
+    id: cars-code-nerf-all-val-object-10-train-optimization-crop
     logdir: logs-new
     randomseed: 55
     iterations: 1000000
@@ -8,14 +8,14 @@ experiment:
     save_every: 5000
     print_every: 100
     val_print_every: 100
-    regularizer_lambda: 1.0e-5
+    regularizer_lambda: 1.0e-4
 
 dataset:
     type: SRNDataset
     basedir: /home/tkhurana/Documents/akash/datasets/srn/srn_cars
     image_size: 128
     world_scale: 1.0
-    train_batch_size: 2  #TODO: Needs to be one, multi batch size is not handled
+    train_batch_size: 4  #TODO: Needs to be one, multi batch size is not handled
     val_batch_size: 1
     near: 0.8
     far: 1.8
@@ -39,7 +39,7 @@ optimizer:
 
 nerf:
     ray_sampler:
-        num_random_rays: 16384
+        num_random_rays: 4096
     point_sampler:
         num_coarse: 64
         num_fine: 128
@@ -57,8 +57,8 @@ nerf:
         log_sampling_dir: True
     white_background: False
     train:
-        chunksize: 12288
-        radiance_field_noise_std: 0.05
+        chunksize: 8192
+        radiance_field_noise_std: 0.002
     validation:
-        chunksize: 12288
-        radiance_field_noise_std: 0.05
+        chunksize: 4096
+        radiance_field_noise_std: 0.002
