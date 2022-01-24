@@ -240,7 +240,7 @@ class CodeNeRFModel(torch.nn.Module):
         xyz_out = self.activation(self.layer_xyz2(xyz_out))
         xyz_out = torch.cat((xyz_out, z_s_out2), dim=-1)
 
-        feat = self.activation(self.fc_out(xyz_out))
+        feat = self.fc_out(xyz_out)
 
         sigma, feat = feat[..., :1], feat[..., 1:]
 
@@ -248,6 +248,6 @@ class CodeNeRFModel(torch.nn.Module):
         view_out = self.activation(self.layer_dir1(view_in))
         view_out = self.activation(self.layer_dir2(view_out))
         view_out = torch.cat((view_out, z_t_out), dim=-1)
-        rgb = self.activation(self.fc_rgb(view_out))
+        rgb = self.fc_rgb(view_out)
 
         return torch.cat((rgb, sigma), dim=-1)

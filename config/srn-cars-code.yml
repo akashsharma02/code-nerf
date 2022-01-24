@@ -1,5 +1,5 @@
 experiment:
-    id: cars-code-nerf-all-val-object-10-train-optimization-crop
+    id: cars-code-nerf-single-mipnerf-fix
     logdir: logs-new
     randomseed: 55
     iterations: 100000
@@ -21,9 +21,12 @@ dataset:
     far: 1.8
 
 models:
-    nerf:
+    nerf_coarse:
       type: CodeNeRFModel
       hidden_size: 256
+    nerf_fine:
+        type: CodeNeRFModel
+        hidden_size: 256
     embedding:
       shape_code_size: 256
       texture_code_size: 256
@@ -34,7 +37,7 @@ optimizer:
     embedding_lr: 5.0E-3
     val_type: AdamW
     val_lr: 1.0E-2
-    scheduler_gamma: 0.01 # No schedule
+    scheduler_gamma: 0.1 # No schedule
     scheduler_step_size: 5000000
 
 nerf:
@@ -42,7 +45,7 @@ nerf:
         num_random_rays: 4096
     point_sampler:
         num_coarse: 64
-        num_fine: 128
+        num_fine: 64
         near_limit: 0.8
         far_limit: 1.8
         spacing_mode: "lindepth"
@@ -57,8 +60,6 @@ nerf:
         log_sampling_dir: True
     white_background: False
     train:
-        chunksize: 8192
-        radiance_field_noise_std: 0.002
+        chunksize: 3072
     validation:
         chunksize: 4096
-        radiance_field_noise_std: 0.002

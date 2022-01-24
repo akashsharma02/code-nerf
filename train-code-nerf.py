@@ -121,8 +121,18 @@ def prepare_models(cfg: CfgNode,
         texture_code_size=cfg.models.embedding.texture_code_size,
     ).to(rank)
 
-    models['nerf'] = getattr(network_arch, cfg.models.nerf.type)(
-        hidden_size=cfg.models.nerf.hidden_size,
+    models['nerf_coarse'] = getattr(network_arch, cfg.models.nerf_coarse.type)(
+        hidden_size=cfg.models.nerf_coarse.hidden_size,
+        num_embeddings=num_objects,
+        shape_code_size=cfg.models.embedding.shape_code_size,
+        texture_code_size=cfg.models.embedding.texture_code_size,
+        num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
+        include_input_xyz=cfg.nerf.embedder.include_input_xyz,
+        num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
+        include_input_dir=cfg.nerf.embedder.include_input_dir,
+    ).to(rank)
+    models['nerf_fine'] = getattr(network_arch, cfg.models.nerf_fine.type)(
+        hidden_size=cfg.models.nerf_fine.hidden_size,
         num_embeddings=num_objects,
         shape_code_size=cfg.models.embedding.shape_code_size,
         texture_code_size=cfg.models.embedding.texture_code_size,
@@ -134,7 +144,8 @@ def prepare_models(cfg: CfgNode,
 
     if cfg.is_distributed:
         models["embedding"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
-        models["nerf"] = ddp(models['nerf'], device_ids=[rank], output_device=rank)
+        models["nerf_coarse"] = ddp(models['nerf_coarse'], device_ids=[rank], output_device=rank)
+        models["nerf_fine"] = ddp(models['nerf_fine'], device_ids=[rank], output_device=rank)
 
     return models
 
@@ -148,7 +159,8 @@ def prepare_optimizer(cfg: CfgNode, models: "OrderedDict[str, torch.nn.Module]")
     """
 
     optimizer = getattr(torch.optim, cfg.optimizer.type)([
-        {'params': models['nerf'].parameters()},
+        {'params': models['nerf_coarse'].parameters()},
+        {'params': models['nerf_fine'].parameters()},
         {'params': models['embedding'].parameters(), 'lr': cfg.optimizer.embedding_lr}
     ], lr=cfg.optimizer.lr
     )
@@ -351,17 +363,24 @@ def train(rank: int, cfg: CfgNode) -> None:
         for j, (ro, rd, target_object_ids, target_pixels) in enumerate(zip(ro_minibatches, rd_minibatches, tgt_object_ids_minibatches, tgt_pixel_minibatches)):
             then = time.time()
 
-            # Pass through nerf model
-            pts, z_vals = point_sampler.sample_uniform(ro, rd)
+            # Pass through nerf_coarse model
             target_object_embedding = models["embedding"](target_object_ids)
-            radiance_field = nerf_forward_pass(models["nerf"], embedders, rd, pts, target_object_embedding)
-            (rgb, _, _, weights, _) = volume_render(radiance_field,
-                                                    z_vals,
-                                                    rd,
-                                                    radiance_field_noise_std=cfg.nerf.train.radiance_field_noise_std,
-                                                    white_background=cfg.nerf.white_background)
+            pts_coarse, z_vals_coarse = point_sampler.sample_uniform(ro, rd)
+            radiance_field_coarse = nerf_forward_pass(models["nerf_coarse"], embedders, rd, pts_coarse, target_object_embedding)
+            (rgb_coarse, _, _, weights, _) = volume_render(radiance_field_coarse, z_vals_coarse, rd)
 
-            nerf_loss = torch.nn.functional.mse_loss(rgb[..., :3], target_pixels[..., :3])
+            nerf_loss_coarse = torch.nn.functional.mse_loss(rgb_coarse[..., :3], target_pixels[..., :3])
+            psnr = mse2psnr(nerf_loss_coarse.item())
+
+            # Pass through nerf_fine model
+            nerf_loss_fine = None
+            pts_fine, z_vals_fine = point_sampler.sample_pdf(ro, rd, weights[..., 1:-1], z_vals_coarse)
+            radiance_field_fine = nerf_forward_pass(models["nerf_fine"], embedders, rd, pts_fine, target_object_embedding)
+            (rgb_fine, _, _, _, _) = volume_render(radiance_field_fine, z_vals_fine, rd)
+
+            nerf_loss_fine = torch.nn.functional.mse_loss(rgb_fine[..., :3], target_pixels[..., :3])
+            psnr = mse2psnr(nerf_loss_fine.item())
+
             shape_params, texture_params = None, None
             for name, params in models['embedding'].named_parameters():
                 if 'shape' in name:
@@ -369,8 +388,8 @@ def train(rank: int, cfg: CfgNode) -> None:
                 if 'texture' in name:
                     texture_params = torch.cat([x.view(-1) for x in params.data])
             embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(shape_params, p=2) + torch.norm(texture_params, p=2))
-            psnr = mse2psnr(nerf_loss.item())
-            loss = nerf_loss + embedding_regularization
+
+            loss = nerf_loss_coarse + nerf_loss_fine + embedding_regularization
 
             optimizer.zero_grad()
             loss.backward()
@@ -380,7 +399,8 @@ def train(rank: int, cfg: CfgNode) -> None:
             i = iteration * num_batches + j
 
             if is_main_process(cfg.is_distributed) and i % cfg.experiment.print_every == 0:
-                writer.add_scalar("train/nerf_loss", nerf_loss.item(), i)
+                writer.add_scalar("train/nerf_loss_coarse", nerf_loss_coarse.item(), i)
+                writer.add_scalar("train/nerf_loss_fine", nerf_loss_fine.item(), i)
                 writer.add_scalar("train/embedding_loss", embedding_regularization.item(), i)
                 writer.add_scalar("train/total_loss", loss.item(), i)
                 writer.add_scalar("train/psnr", psnr, i)
@@ -389,7 +409,8 @@ def train(rank: int, cfg: CfgNode) -> None:
 
                 log_string = f"[TRAIN] Iter: {i:>8} "
                 log_string += f"Load Iter: {iteration:>8} Time taken: {time.time()-then:>4.4f} "
-                log_string += f"Learning rate: {scheduler.get_last_lr()[0]:0.8f} NeRF Loss: {nerf_loss.item():>4.4f} "
+                log_string += f"Learning rate: {scheduler.get_last_lr()[0]:0.8f} NeRF Coarse Loss: {nerf_loss_coarse.item():>4.4f} "
+                log_string += f"NeRF Fine Loss: {nerf_loss_fine.item():>4.4f} "
                 log_string += f"Regularization Loss: {embedding_regularization.item():>4.4f} "
                 log_string += f"Total Loss: {loss.item():>4.4f} "
                 log_string += f"PSNR: {psnr:>4.4f}"
@@ -398,7 +419,8 @@ def train(rank: int, cfg: CfgNode) -> None:
             if is_main_process(cfg.is_distributed) and (i > 0 and i % cfg.experiment.save_every == 0 or i == cfg.experiment.iterations - 1):
                 checkpoint_dict = {
                     "iter": iteration,
-                    "model_nerf_state_dict": models["nerf"].state_dict(),
+                    "model_nerf_coarse_state_dict": models["nerf_coarse"].state_dict(),
+                    "model_nerf_fine_state_dict": models["nerf_fine"].state_dict(),
                     "model_embedding_state_dict": models["embedding"].state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                 }
@@ -497,9 +519,7 @@ def validate(cfg: CfgNode,
     #         radiance_field = nerf_forward_pass(models["nerf"], embedders, rd, pts, [z_s, z_t])
     #         (rgb, _, _, weights, _) = volume_render(radiance_field,
     #                                                 z_vals,
-    #                                                 rd,
-    #                                                 radiance_field_noise_std=cfg.nerf.train.radiance_field_noise_std,
-    #                                                 white_background=cfg.nerf.white_background)
+    #                                                 rd)
     #         nerf_loss = torch.nn.functional.mse_loss(rgb[..., :3], target_pixels[..., :3])
     #         embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(z_s, p=2) + torch.norm(z_t, p=2))
     #         psnr = mse2psnr(nerf_loss.item())
@@ -601,15 +621,15 @@ def parallel_image_render(pose: torch.Tensor,
         for ro, rd, z_s, z_t in zip(ro_minibatches, rd_minibatches, shape_embedding_minibatches, texture_embedding_minibatches):
 
             # Pass through NeRF model
-            pts, z_vals = point_sampler.sample_uniform(ro, rd)
+            pts_coarse, z_vals_coarse = point_sampler.sample_uniform(ro, rd)
 
-            radiance_field = nerf_forward_pass(models["nerf"], embedders, rd, pts, [z_s, z_t])
-            (rgb, _, _, weights, _) = volume_render(radiance_field,
-                                                    z_vals,
-                                                    rd,
-                                                    radiance_field_noise_std=cfg.nerf.validation.radiance_field_noise_std,
-                                                    white_background=cfg.nerf.white_background)
-            rgb_batches.append(rgb)
+            radiance_field_coarse = nerf_forward_pass(models["nerf_coarse"], embedders, rd, pts_coarse, [z_s, z_t])
+            (rgb_coarse, _, _, weights, _) = volume_render(radiance_field_coarse, z_vals_coarse, rd)
+
+            pts_fine, z_vals_fine = point_sampler.sample_pdf(ro, rd, weights[..., 1:-1], z_vals_coarse)
+            radiance_field_fine = nerf_forward_pass(models["nerf_fine"], embedders, rd, pts_fine, [z_s, z_t])
+            (rgb_fine, _, _, weights, _) = volume_render(radiance_field_fine, z_vals_fine, rd)
+            rgb_batches.append(rgb_fine)
 
         rgb_batches = torch.cat(rgb_batches, dim=0)
 
@@ -620,7 +640,7 @@ def parallel_image_render(pose: torch.Tensor,
         padded_rgb = torch.zeros((padding_per_process[rank], rgb_batches.shape[-1]),
                                  dtype=rgb_batches.dtype,
                                  device=rgb_batches.device)
-        rgb = torch.cat([rgb_batches, padded_rgb], dim=0)
+        rgb_batches = torch.cat([rgb_batches, padded_rgb], dim=0)
         all_rgb_batches = [torch.zeros_like(rgb_batches) for _ in range(cfg.gpus)]
         torch.distributed.all_gather(all_rgb_batches, rgb_batches)
 
