@@ -1,5 +1,5 @@
 experiment:
-    id: cars-code-nerf-single-multi-object-30-lr-1e-4
+    id: cars-code-nerf-relu-single-multi-object-30-lr-1e-4
     logdir: logs-new
     randomseed: 55
     iterations: 100000
@@ -33,10 +33,10 @@ models:
 
 optimizer:
     type: AdamW
-    lr: 5.0E-4
-    embedding_lr: 5.0E-3
+    lr: 1.0E-4
+    embedding_lr: 1.0E-3
     val_type: AdamW
-    val_lr: 1.0E-3
+    val_lr: 5.0E-3
     scheduler_gamma: 0.1 # No schedule
     scheduler_step_size: 5000000
 
