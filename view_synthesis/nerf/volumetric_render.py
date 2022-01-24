@@ -25,6 +25,14 @@ def cumprod_exclusive(tensor: torch.Tensor) -> torch.Tensor:
     return cumprod
 
 
+def widened_sigmoid(x, eps=0.001):
+    return torch.sigmoid(x) * (1 + 2 * eps) - eps
+
+
+def shifted_softplus(x):
+    return torch.nn.functional.softplus(x-1)
+
+
 def volume_render(
     radiance_field,
     depth_values,
@@ -38,7 +46,7 @@ def volume_render(
 
     dists = dists * ray_directions[..., None, :].norm(p=2, dim=-1)
 
-    rgb = torch.sigmoid(radiance_field[..., :3])
+    rgb = widened_sigmoid(radiance_field[..., :3])
     noise = 0.0
     if radiance_field_noise_std > 0.0:
         noise = (
@@ -49,7 +57,8 @@ def volume_render(
             )
             * radiance_field_noise_std
         )
-    sigma_a = torch.nn.functional.relu(radiance_field[..., 3] + noise)
+    # sigma_a = torch.nn.functional.softplus(radiance_field[..., 3] + noise)
+    sigma_a = shifted_softplus(radiance_field[..., 3] + noise)
     alpha = 1.0 - torch.exp(-sigma_a * dists)
 
     weights = alpha * cumprod_exclusive(1.0 - alpha + 1e-10)

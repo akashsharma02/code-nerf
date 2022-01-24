@@ -214,7 +214,7 @@ class CodeNeRFModel(torch.nn.Module):
 
         self.fc_rgb = torch.nn.Linear(self.hidden_size + self.texture_code_size, 3)
 
-        self.relu = torch.nn.functional.relu
+        self.activation = torch.nn.functional.relu
 
     def forward(self, z_s: torch.Tensor, z_t: torch.Tensor, x: torch.Tensor):
         """ Forward function for NeRF Model
@@ -230,24 +230,24 @@ class CodeNeRFModel(torch.nn.Module):
         xyz = x[..., : self.dim_xyz]
         view = x[..., self.dim_xyz:]
 
-        z_s_out = self.relu(self.shape_code_layer1(z_s))
-        z_s_out2 = self.relu(self.shape_code_layer2(z_s))
+        z_s_out = self.activation(self.shape_code_layer1(z_s))
+        z_s_out2 = self.activation(self.shape_code_layer2(z_s))
 
-        z_t_out = self.relu(self.texture_code_layer1(z_t))
+        z_t_out = self.activation(self.texture_code_layer1(z_t))
 
-        xyz_out = self.relu(self.layer_xyz1(xyz))
+        xyz_out = self.activation(self.layer_xyz1(xyz))
         xyz_out = torch.cat((xyz_out, z_s_out), dim=-1)
-        xyz_out = self.relu(self.layer_xyz2(xyz_out))
+        xyz_out = self.activation(self.layer_xyz2(xyz_out))
         xyz_out = torch.cat((xyz_out, z_s_out2), dim=-1)
 
-        feat = self.relu(self.fc_out(xyz_out))
+        feat = self.activation(self.fc_out(xyz_out))
 
         sigma, feat = feat[..., :1], feat[..., 1:]
 
         view_in = torch.cat((feat, view), dim=-1)
-        view_out = self.relu(self.layer_dir1(view_in))
-        view_out = self.relu(self.layer_dir2(view_out))
+        view_out = self.activation(self.layer_dir1(view_in))
+        view_out = self.activation(self.layer_dir2(view_out))
         view_out = torch.cat((view_out, z_t_out), dim=-1)
-        rgb = self.relu(self.fc_rgb(view_out))
+        rgb = self.activation(self.fc_rgb(view_out))
 
         return torch.cat((rgb, sigma), dim=-1)

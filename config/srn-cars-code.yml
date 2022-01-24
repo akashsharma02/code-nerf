@@ -1,5 +1,4 @@
 experiment:
-<<<<<<< Updated upstream
     id: cars-code-nerf-all-val-object-10-train-optimization-crop
     logdir: logs-new
     randomseed: 55

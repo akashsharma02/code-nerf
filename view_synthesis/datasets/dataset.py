@@ -216,12 +216,12 @@ class SRNDataset(torch.utils.data.Dataset):
         super(SRNDataset, self).__init__()
         self.base_path = Path(path)
         self.dataset_name = self.base_path.stem.split("_")[-1]
-        if stage == "train":
-            self.base_path = self.base_path / f"{self.dataset_name}_val"
-        elif stage == "val":
-            self.base_path = self.base_path / f"{self.dataset_name}_train"
-        else:
-            self.base_path = self.base_path / f"{self.dataset_name}_{stage}"
+        # if stage == "train":
+        #     self.base_path = self.base_path / f"{self.dataset_name}_val"
+        # elif stage == "val":
+        #     self.base_path = self.base_path / f"{self.dataset_name}_train"
+        # else:
+        self.base_path = self.base_path / f"{self.dataset_name}_{stage}"
 
         self.image_size = image_size
         self.world_scale = world_scale
@@ -238,11 +238,12 @@ class SRNDataset(torch.utils.data.Dataset):
                 self.base_path = tmp
 
         if stage == "train":
-            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:30]
+            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:1]
             self.num_objects = len(self.intrinsic)
         # TODO: Remove this
         elif stage == "val":
             self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:1]
+            self.num_objects = len(self.intrinsic)
             self.num_objects = len(self.intrinsic)
         else:
             self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
