@@ -1,14 +1,15 @@
 experiment:
+<<<<<<< Updated upstream
     id: cars-code-nerf-all-val-object-10-train-optimization-crop
     logdir: logs-new
     randomseed: 55
-    iterations: 1000000
+    iterations: 100000
     val_iterations: 300
     validate_every: 1000
     save_every: 5000
     print_every: 100
     val_print_every: 100
-    regularizer_lambda: 1.0e-4
+    regularizer_lambda: 1.0e-5
 
 dataset:
     type: SRNDataset
@@ -30,8 +31,8 @@ models:
 
 optimizer:
     type: AdamW
-    lr: 1.0E-4
-    embedding_lr: 1.0E-3
+    lr: 5.0E-4
+    embedding_lr: 5.0E-3
     val_type: AdamW
     val_lr: 1.0E-2
     scheduler_gamma: 0.01 # No schedule

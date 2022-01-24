@@ -357,13 +357,11 @@ def train(rank: int, cfg: CfgNode) -> None:
                                                     white_background=cfg.nerf.white_background)
 
             nerf_loss = torch.nn.functional.mse_loss(rgb[..., :3], target_pixels[..., :3])
-            shape_embedding_params, texture_embedding_params = None, None
-            for name, params in models['embedding'].named_parameters():
-                if 'shape' in name:
-                    shape_embedding_params = torch.cat([x.view(-1) for x in params.data])
-                if 'texture' in name:
-                    texture_embedding_params = torch.cat([x.view(-1) for x in params.data])
-            embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(shape_embedding_params, p=2) + torch.norm(texture_embedding_params, p=2))
+            if cfg.is_distributed:
+                all_shape_embedding, all_texture_embedding = models["embedding"].module.get_all_embeddings(device=device)
+            else:
+                all_shape_embedding, all_texture_embedding = models["embedding"].get_all_embeddings(device=device)
+            embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(all_shape_embedding, p=2) + torch.norm(all_texture_embedding, p=2))
             psnr = mse2psnr(nerf_loss.item())
             loss = nerf_loss + embedding_regularization
 
@@ -385,7 +383,7 @@ def train(rank: int, cfg: CfgNode) -> None:
                 log_string = f"[TRAIN] Iter: {i:>8} "
                 log_string += f"Load Iter: {iteration:>8} Time taken: {time.time()-then:>4.4f} "
                 log_string += f"Learning rate: {scheduler.get_last_lr()[0]:0.8f} NeRF Loss: {nerf_loss.item():>4.4f} "
-                log_string += f"Regularization Loss: {embedding_regularization.item():>4.4f} "
+                # log_string += f"Regularization Loss: {embedding_regularization.item():>4.4f} "
                 log_string += f"Total Loss: {loss.item():>4.4f} "
                 log_string += f"PSNR: {psnr:>4.4f}"
                 print(log_string)
