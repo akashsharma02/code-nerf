@@ -45,12 +45,12 @@ def volume_render(
     delta = dists * ray_directions[..., None, :].norm(p=2, dim=-1)
 
     # sigma_a = torch.nn.functional.softplus(radiance_field[..., 3] + noise)
-    # sigma_a = shifted_softplus(radiance_field[..., 3])
-    sigma_a = torch.nn.functional.relu(radiance_field[..., 3])
+    sigma_a = shifted_softplus(radiance_field[..., 3])
+    # sigma_a = torch.nn.functional.relu(radiance_field[..., 3])
     sigma_delta = sigma_a * delta
 
-    # rgb = widened_sigmoid(radiance_field[..., :3])
-    rgb = torch.sigmoid(radiance_field[..., :3])
+    rgb = widened_sigmoid(radiance_field[..., :3])
+    # rgb = torch.sigmoid(radiance_field[..., :3])
     transmittance = torch.exp(-torch.cat([
         torch.zeros_like(sigma_delta[..., :1]),
         torch.cumsum(sigma_delta[..., :-1], axis=-1)

@@ -1,6 +1,5 @@
 from numpy.typing import DTypeLike
 import torch
-import numpy as np
 
 
 class PositionalEmbedder(object):
@@ -52,8 +51,3 @@ class PositionalEmbedder(object):
             return encoding[0]
         else:
             return torch.cat(encoding, dim=-1)
-
-
-if __name__ == "__main__":
-    # TODO: Test positional embedding
-    pass

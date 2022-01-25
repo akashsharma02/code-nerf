@@ -1,8 +1,8 @@
 experiment:
-    id: cars-code-nerf-relu-single-multi-object-30-lr-1e-4
-    logdir: logs-new
+    id: cars-code-nerf-refactor-mipnerf
+    logdir: ../logs-new
     randomseed: 55
-    iterations: 100000
+    iterations: 500000
     val_iterations: 300
     validate_every: 1000
     save_every: 5000
@@ -12,7 +12,7 @@ experiment:
 
 dataset:
     type: SRNDataset
-    basedir: /home/tkhurana/Documents/akash/datasets/srn/srn_cars
+    basedir: /data3/tkhurana/datasets/srn/srn_cars
     image_size: 128
     world_scale: 1.0
     train_batch_size: 4  #TODO: Needs to be one, multi batch size is not handled

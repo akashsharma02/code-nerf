@@ -1,8 +1,6 @@
-from typing import List, Union, Dict, Literal, Tuple
+from typing import Literal
 
 from pathlib import Path
-import matplotlib.pyplot as plt
-import json
 
 import numpy as np
 import imageio
@@ -17,8 +15,6 @@ class SRNDataset(torch.utils.data.Dataset):
     def __init__(
         self, path: str,
         stage: Literal["train", "val", "test"] = "train",
-        image_size: Tuple[int, int] = (128, 128),
-        world_scale=1.0,
     ):
         """
         Args:
@@ -29,15 +25,7 @@ class SRNDataset(torch.utils.data.Dataset):
         super(SRNDataset, self).__init__()
         self.base_path = Path(path)
         self.dataset_name = self.base_path.stem.split("_")[-1]
-        if stage == "train":
-            self.base_path = self.base_path / f"{self.dataset_name}_val"
-        elif stage == "val":
-            self.base_path = self.base_path / f"{self.dataset_name}_train"
-        else:
-            self.base_path = self.base_path / f"{self.dataset_name}_{stage}"
-
-        self.image_size = image_size
-        self.world_scale = world_scale
+        self.base_path = self.base_path / f"{self.dataset_name}_{stage}"
 
         print("Loading SRN dataset", self.base_path, "name:", self.dataset_name)
         self.stage = stage
@@ -45,7 +33,6 @@ class SRNDataset(torch.utils.data.Dataset):
 
         is_chair = "chair" in self.dataset_name
         if is_chair and stage == "train":
-            # Ugly thing from SRN's public dataset
             tmp = self.base_path / "chairs_2.0_train"
             if tmp.exists():
                 self.base_path = tmp
@@ -53,9 +40,8 @@ class SRNDataset(torch.utils.data.Dataset):
         if stage == "train":
             self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:30]
             self.num_objects = len(self.intrinsic)
-        # TODO: Remove this
         elif stage == "val":
-            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:1]
+            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:2]
             self.num_objects = len(self.intrinsic)
         else:
             self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
@@ -101,16 +87,6 @@ class SRNDataset(torch.utils.data.Dataset):
         pose = np.loadtxt(pose_filename).reshape(4, 4)
         pose = pose @ np.diag([1, -1, -1, 1])
 
-        # if rgb_image.shape[-2:] != self.image_size:
-        #     scale = self.image_size[0] / rgb_image.shape[-2]
-        #     focal *= scale
-        #     cx *= scale
-        #     cy *= scale
-
-        if self.world_scale != 1.0:
-            focal *= self.world_scale
-            pose[:3, 3] *= self.world_scale
-
         intrinsic = np.eye(4)
         intrinsic[0, 0], intrinsic[1, 1] = focal, focal
         intrinsic[0, 2], intrinsic[1, 2] = cx-crop_width, cy-crop_height
@@ -123,53 +99,3 @@ class SRNDataset(torch.utils.data.Dataset):
             "pose": pose.astype(np.float32),
         }
         return sample
-
-
-# if __name__ == "__main__":
-    # Test Dataset
-    # car_interior_dataset = CarInteriorDataset(
-    #     root_dir="/home/fyusion/Documents/datasets/bmw-simulated", resolution_level=2)
-    #
-    # print(f"Length of the dataset: {len(car_interior_dataset)}")
-    #
-    # train_size = int(len(car_interior_dataset) * 0.75)
-    # test_size = len(car_interior_dataset) - train_size
-    #
-    # train_dataset, test_dataset = torch.utils.data.random_split(
-    #     car_interior_dataset, [train_size, test_size])
-    #
-    # train_dataloader = torch.utils.data.DataLoader(
-    #     train_dataset, batch_size=1, shuffle=True, num_workers=4)
-    # test_dataloader = torch.utils.data.DataLoader(
-    #     test_dataset, batch_size=1, shuffle=True, num_workers=4)
-    #
-    # for i, sample in enumerate(train_dataloader):
-    #     sample = car_interior_dataset[i]
-    #
-    #     Path("./dataset_test").mkdir(parents=True, exist_ok=True)
-    #     plt.imsave(f"./dataset_test/sample_color_{i}.png", sample['color'])
-    #     plt.imsave(f"./dataset_test/sample_depth_{i}.png", sample['depth'])
-    #     plt.imsave(f"./dataset_test/sample_normal_{i}.png", sample['normal'])
-    #
-    #     print(f"Pose of sample {i}:\n {sample['pose']}")
-    #     print(f"Intrinsic of sample {i}:\n {sample['intrinsic']}")
-    #
-    #     if i > 10:
-    #         break
-    #
-    # for i, sample in enumerate(test_dataloader):
-    #     sample = car_interior_dataset[i]
-    #
-    #     Path("./dataset_test").mkdir(parents=True, exist_ok=True)
-    #     plt.imsave(
-    #         f"./dataset_test/test_sample_color_{i}.png", sample['color'])
-    #     plt.imsave(
-    #         f"./dataset_test/test_sample_depth_{i}.png", sample['depth'])
-    #     plt.imsave(
-    #         f"./dataset_test/test_sample_normal_{i}.png", sample['normal'])
-    #
-    #     print(f"Pose of sample {i}:\n {sample['pose']}")
-    #     print(f"Intrinsic of sample {i}:\n {sample['intrinsic']}")
-    #
-    #     if i > 10:
-    #         break

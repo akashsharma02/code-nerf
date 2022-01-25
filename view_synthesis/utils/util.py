@@ -1,4 +1,5 @@
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, OrderedDict, Literal
+from torch.utils.tensorboard import SummaryWriter
 import math
 import torch
 from pathlib import Path
@@ -23,10 +24,6 @@ def prepare_device(n_gpus_to_use: int, is_distributed: bool) -> Tuple[torch.devi
         print(f"Warning: The number of GPU\'s configured to use is {n_gpus_to_use}, but only {n_gpu} are "
               "available on this machine.")
         n_gpus_to_use = n_gpu
-    # TODO: Remove this, (using only for debugging)
-    # if n_gpus_to_use < 2 and is_distributed == True:
-    #     print(f"Warning: Setting up DataDistributedParallel is forbidden with 1 GPU.")
-    #     is_distributed = False
 
     main_device = torch.device('cuda:0' if n_gpus_to_use > 0 else 'cpu')
     list_ids = list(range(n_gpus_to_use))
@@ -128,3 +125,33 @@ def get_minibatches(inputs: torch.Tensor, chunksize: Optional[int] = 1024 * 8):
     `chunksize`.
     """
     return [inputs[i: i + chunksize] for i in range(0, inputs.shape[0], chunksize)]
+
+
+def log_losses(writer: SummaryWriter,
+               mode: Literal["train", "val", "val-optim"],
+               i: int,
+               iteration: int,
+               time_taken: float,
+               losses: "OrderedDict[float, float, float, float, float]",
+               learning_rate: Optional[float] = None) -> str:
+    """
+    Log losses to Tensorboard and console output
+    """
+    log_string = ""
+    if mode == "train":
+        log_string += f"[TRAIN ] Iter: {i:>8} "
+    elif mode == "val":
+        log_string += f"[VAL   ] Iter: {i:>8} "
+    else:
+        log_string += f"[VALOPT] Iter: {i:>8} "
+    log_string += f"Load Iter: {iteration:>8} Time taken: {time_taken:>4.4f} "
+
+    if learning_rate:
+        log_string += f"Learning rate: {learning_rate:0.8f} "
+        writer.add_scalar("train/learning_rate", learning_rate, i)
+
+    for key, val in losses.items():
+        writer.add_scalar(f"{mode}/{key}", val, i)
+        log_string += f"{key}: {val:>4.4f} "
+
+    return log_string

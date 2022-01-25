@@ -107,7 +107,6 @@ def meshgrid_xy(
       tensor1 (torch.Tensor): Tensor whose elements define the first dimension of the returned meshgrid.
       tensor2 (torch.Tensor): Tensor whose elements define the second dimension of the returned meshgrid.
     """
-    # TESTED
     ii, jj = torch.meshgrid(tensor1, tensor2)
     return ii.transpose(-1, -2), jj.transpose(-1, -2)
 

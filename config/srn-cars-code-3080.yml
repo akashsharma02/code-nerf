@@ -1,10 +1,10 @@
 experiment:
     id: cars-code-nerf-single-mipnerf-volume-render
-    logdir: logs-new
+    logdir: ../logs-new
     randomseed: 42
     iterations: 100000
     val_iterations: 300
-    validate_every: 1000
+    validate_every: 100
     save_every: 5000
     print_every: 100
     val_print_every: 100
@@ -15,7 +15,7 @@ dataset:
     basedir: /home/akashsharma/Documents/datasets/srn/srn_cars/
     image_size: 128
     world_scale: 1.0
-    train_batch_size: 1  #TODO: Needs to be one, multi batch size is not handled
+    train_batch_size: 1
     val_batch_size: 1
     near: 0.8
     far: 1.8
@@ -60,7 +60,5 @@ nerf:
         log_sampling_dir: True
     train:
         chunksize: 1024
-        radiance_field_noise_std: 0.002
     validation:
         chunksize: 2048
-        radiance_field_noise_std: 0.002
