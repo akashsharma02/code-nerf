@@ -25,43 +25,42 @@ def cumprod_exclusive(tensor: torch.Tensor) -> torch.Tensor:
     return cumprod
 
 
+def widened_sigmoid(x, eps=0.001):
+    return torch.sigmoid(x) * (1 + 2 * eps) - eps
+
+
+def shifted_softplus(x):
+    return torch.nn.functional.softplus(x-1)
+
+
 def volume_render(
     radiance_field,
     depth_values,
     ray_directions,
-    radiance_field_noise_std=0.0,
-    white_background=False,
 ):
     dists = depth_values[..., 1:] - depth_values[..., :-1]
     # Add distance from far-limit to infinity to retain shape (64 samples or 128 samples)
     dists = torch.cat((dists, torch.full_like(dists[..., :1], 1e10)), dim=-1)
 
-    dists = dists * ray_directions[..., None, :].norm(p=2, dim=-1)
+    delta = dists * ray_directions[..., None, :].norm(p=2, dim=-1)
 
+    # sigma_a = torch.nn.functional.softplus(radiance_field[..., 3] + noise)
+    # sigma_a = shifted_softplus(radiance_field[..., 3])
+    sigma_a = torch.nn.functional.relu(radiance_field[..., 3])
+    sigma_delta = sigma_a * delta
+
+    # rgb = widened_sigmoid(radiance_field[..., :3])
     rgb = torch.sigmoid(radiance_field[..., :3])
-    noise = 0.0
-    if radiance_field_noise_std > 0.0:
-        noise = (
-            torch.randn(
-                radiance_field[..., 3].shape,
-                dtype=radiance_field.dtype,
-                device=radiance_field.device,
-            )
-            * radiance_field_noise_std
-        )
-    sigma_a = torch.nn.functional.relu(radiance_field[..., 3] + noise)
-    alpha = 1.0 - torch.exp(-sigma_a * dists)
+    transmittance = torch.exp(-torch.cat([
+        torch.zeros_like(sigma_delta[..., :1]),
+        torch.cumsum(sigma_delta[..., :-1], axis=-1)
+    ], dim=-1))
+    alpha = 1.0 - torch.exp(-sigma_delta)
+    weights = alpha * transmittance
 
-    weights = alpha * cumprod_exclusive(1.0 - alpha + 1e-10)
-
-    rgb_map = weights[..., None] * rgb
-    rgb_map = rgb_map.sum(dim=-2)
-    depth_map = weights * depth_values
-    depth_map = depth_map.sum(dim=-1)
+    rgb_map = (weights[..., None] * rgb).sum(dim=-2)
+    depth_map = (weights * depth_values).sum(dim=-1)
     acc_map = weights.sum(dim=-1)
     disp_map = 1.0 / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / acc_map)
-
-    if white_background:
-        rgb_map = rgb_map + (1.0 - acc_map[..., None])
 
     return rgb_map, disp_map, acc_map, weights, depth_map

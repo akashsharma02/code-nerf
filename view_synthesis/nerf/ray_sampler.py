@@ -1,5 +1,4 @@
-from typing import Tuple, Union, Literal
-from numpy.typing import DTypeLike
+from typing import Tuple, Union
 import numpy as np
 import torch
 
@@ -32,14 +31,13 @@ class RaySampler(object):
         self.cx = self.intrinsics[..., 0, 2]
         self.cy = self.intrinsics[..., 1, 2]
 
-        ii, jj = torch.meshgrid(
+        ii, jj = meshgrid_xy(
             torch.arange(
                 width, dtype=self.intrinsics.dtype, device=self.device
             ),
             torch.arange(
                 height, dtype=self.intrinsics.dtype, device=self.device
             ),
-            indexing='xy'
         )
         self.directions = torch.stack(
             [
@@ -97,6 +95,21 @@ class RaySampler(object):
         ray_directions = torch.einsum('hwij, bji->bhwj', directions, tform_cam2world[..., :3, :3]).contiguous()
         ray_origins = tform_cam2world[..., :3, -1][:, None, None, :].expand(ray_directions.shape)
         return ray_origins, ray_directions
+
+
+def meshgrid_xy(
+    tensor1: torch.Tensor, tensor2: torch.Tensor
+) -> (torch.Tensor, torch.Tensor):
+    """Mimick np.meshgrid(..., indexing="xy") in pytorch. torch.meshgrid only allows "ij" indexing.
+    (If you're unsure what this means, safely skip trying to understand this, and run a tiny example!)
+
+    Args:
+      tensor1 (torch.Tensor): Tensor whose elements define the first dimension of the returned meshgrid.
+      tensor2 (torch.Tensor): Tensor whose elements define the second dimension of the returned meshgrid.
+    """
+    # TESTED
+    ii, jj = torch.meshgrid(tensor1, tensor2)
+    return ii.transpose(-1, -2), jj.transpose(-1, -2)
 
 
 if __name__ == "__main__":

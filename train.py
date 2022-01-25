@@ -74,10 +74,10 @@ def prepare_dataloader(cfg: CfgNode) -> Tuple[torch.utils.data.DataLoader, torch
         )
 
     train_dataloader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=cfg.dataset.train_batch_size, shuffle=False, num_workers=0, sampler=train_sampler, pin_memory=False)
+        train_dataset, batch_size=cfg.dataset.train_batch_size, shuffle=False, num_workers=0, sampler=train_sampler, pin_memory=True)
 
     val_dataloader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=cfg.dataset.val_batch_size, shuffle=False, num_workers=0, sampler=val_sampler, pin_memory=False)
+        val_dataset, batch_size=cfg.dataset.val_batch_size, shuffle=False, num_workers=0, sampler=val_sampler, pin_memory=True)
 
     return train_dataloader, val_dataloader
 
@@ -180,7 +180,6 @@ def load_checkpoint(cfg: CfgNode, models: "OrderedDict[str, torch.nn.Module]", o
         optimizer.load_state_dict(
             checkpoint["optimizer_state_dict"])
         start_iter = checkpoint["start_iter"]
-
 
     return start_iter
 
