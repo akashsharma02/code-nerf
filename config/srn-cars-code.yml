@@ -1,5 +1,5 @@
 experiment:
-    id: cars-code-nerf-refactor-mipnerf
+    id: cars-code-nerf-refactor-exp1
     logdir: ../logs-new
     randomseed: 55
     iterations: 500000

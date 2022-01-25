@@ -1,12 +1,16 @@
-from typing import Tuple, List, Optional, OrderedDict, Literal
-from torch.utils.tensorboard import SummaryWriter
+from typing import Tuple, List, Optional, OrderedDict, Literal, Union
+
 import math
 import torch
 from pathlib import Path
+
+from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as ddp
 
 from view_synthesis.cfgnode import CfgNode
 import view_synthesis.datasets as datasets
+import view_synthesis.models as network_arch
 
 
 def prepare_device(n_gpus_to_use: int, is_distributed: bool) -> Tuple[torch.device, List[int]]:
@@ -52,7 +56,7 @@ def prepare_experiment(cfg: CfgNode):
     return logdir_path
 
 
-def prepare_dataloader(cfg: CfgNode) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+def prepare_dataloader(stage: Literal["train", "val"], cfg: CfgNode) -> torch.utils.data.DataLoader:
     """ Prepare the dataloader considering DataDistributedParallel
 
     :function:
@@ -60,49 +64,154 @@ def prepare_dataloader(cfg: CfgNode) -> Tuple[torch.utils.data.DataLoader, torch
     :returns: TODO
 
     """
+
     dataset = getattr(datasets, cfg.dataset.type)(
-        cfg.dataset.basedir,
-        cfg.dataset.resolution_level)
-
-    train_size = int(len(dataset) * 0.75)
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size])
-
-    train_sampler = torch.utils.data.RandomSampler(
-        train_dataset,
-        replacement=True,
-        num_samples=cfg.experiment.iterations
+        path=cfg.dataset.basedir,
+        stage=stage
     )
 
-    val_sampler = torch.utils.data.RandomSampler(
-        val_dataset,
+    sampler = torch.utils.data.RandomSampler(
+        dataset,
         replacement=True,
         num_samples=cfg.experiment.iterations
     )
 
     if cfg.is_distributed:
-        train_sampler = torch.utils.data.DistributedSampler(
-            train_dataset,
+        sampler = torch.utils.data.DistributedSampler(
+            dataset,
             num_replicas=dist.get_world_size(),
             rank=dist.get_rank(),
             drop_last=False
         )
+    batch_size = cfg.dataset.train_batch_size if stage == "train" else cfg.dataset.val_batch_size
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=False, num_workers=0, sampler=sampler, pin_memory=True)
 
-        val_sampler = torch.utils.data.DistributedSampler(
-            val_dataset,
-            num_replicas=dist.get_world_size(),
-            rank=dist.get_rank(),
-            drop_last=False
-        )
+    return dataloader, dataset
 
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=cfg.dataset.train_batch_size, shuffle=False, num_workers=0, sampler=train_sampler, pin_memory=False)
 
-    val_dataloader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=cfg.dataset.val_batch_size, shuffle=False, num_workers=0, sampler=val_sampler, pin_memory=False)
+def prepare_models(cfg: CfgNode,
+                   num_objects: int
+                   ) -> "OrderedDict[torch.nn.Module, Union[torch.nn.Module, None]]":
+    """
+    Prepare the torch models
 
-    return train_dataloader, val_dataloader
+    Args:
+        rank: Process rank. 0 == main process
+    Return:
+        models: Dict containing embedding model and NeRF model
+        latent_codes: List containing latent codes for
+                      each object style in a semantic category defined by the dataset
+
+    """
+    rank = 0
+    if cfg.is_distributed:
+        rank = dist.get_rank()
+
+    models = OrderedDict()
+    models['embedding'] = network_arch.ShapeTextureEmbedding(
+        num_embeddings=num_objects,
+        shape_code_size=cfg.models.embedding.shape_code_size,
+        texture_code_size=cfg.models.embedding.texture_code_size,
+    ).to(rank)
+
+    models['nerf_coarse'] = getattr(network_arch, cfg.models.nerf_coarse.type)(
+        hidden_size=cfg.models.nerf_coarse.hidden_size,
+        num_embeddings=num_objects,
+        shape_code_size=cfg.models.embedding.shape_code_size,
+        texture_code_size=cfg.models.embedding.texture_code_size,
+        num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
+        include_input_xyz=cfg.nerf.embedder.include_input_xyz,
+        num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
+        include_input_dir=cfg.nerf.embedder.include_input_dir,
+    ).to(rank)
+    models['nerf_fine'] = getattr(network_arch, cfg.models.nerf_fine.type)(
+        hidden_size=cfg.models.nerf_fine.hidden_size,
+        num_embeddings=num_objects,
+        shape_code_size=cfg.models.embedding.shape_code_size,
+        texture_code_size=cfg.models.embedding.texture_code_size,
+        num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
+        include_input_xyz=cfg.nerf.embedder.include_input_xyz,
+        num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
+        include_input_dir=cfg.nerf.embedder.include_input_dir,
+    ).to(rank)
+
+    if cfg.is_distributed:
+        models["embedding"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
+        models["nerf_coarse"] = ddp(models['nerf_coarse'], device_ids=[rank], output_device=rank)
+        models["nerf_fine"] = ddp(models['nerf_fine'], device_ids=[rank], output_device=rank)
+
+    return models
+
+
+def prepare_optimizer(cfg: CfgNode,
+                      models: "OrderedDict[str, torch.nn.Module]"
+                      ) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
+    """ Load the optimizer and learning schedule according to the configuration
+
+    Args:
+        cfg: CfgNode object
+        models: torch.nn.Module objects whose parameters need to be optimized
+    Return: TODO
+
+    """
+
+    optimizer = getattr(torch.optim, cfg.optimizer.type)([
+        {'params': models['nerf_coarse'].parameters()},
+        {'params': models['nerf_fine'].parameters()},
+        {'params': models['embedding'].parameters(), 'lr': cfg.optimizer.embedding_lr}
+    ], lr=cfg.optimizer.lr
+    )
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda epoch: cfg.optimizer.scheduler_gamma ** (
+            epoch / cfg.optimizer.scheduler_step_size)
+    )
+
+    return optimizer, scheduler
+
+
+def load_checkpoint(cfg: CfgNode,
+                    models: "OrderedDict[str, torch.nn.Module]",
+                    optimizer: torch.optim.Optimizer
+                    ) -> int:
+    """
+    Load checkpoint given a checkpoint file and initialize the starting iteration
+
+    Args:
+        cfg: CfgNode object
+        models: torch.nn.Module objects whose parameters are to be loaded
+        optimizer: optimizer whose parameters are to be loaded
+    Return:
+        start iteration
+
+    """
+    start_iter = 0
+
+    checkpoint_file = Path(cfg.load_checkpoint)
+    if checkpoint_file.exists() and checkpoint_file.is_file() and checkpoint_file.suffix == ".ckpt":
+        rank = 0
+        if cfg.is_distributed:
+            rank = dist.get_rank()
+            map_location = {"cuda:0": f"cuda:{rank}"}
+            checkpoint = torch.load(
+                cfg.load_checkpoint, map_location=map_location)
+            # Ensure that all loading by all processes is done before any process has started saving models
+            torch.distributed.barrier()
+        else:
+            checkpoint = torch.load(cfg.load_checkpoint)
+            torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(checkpoint, "module")
+
+        for model_name, model in models.items():
+            model.load_state_dict(
+                checkpoint[f"model_{model_name}_state_dict"])
+
+        optimizer.load_state_dict(
+            checkpoint["optimizer_state_dict"])
+        start_iter = checkpoint["iter"]
+
+    return start_iter
 
 
 def mse2psnr(mse_val: float) -> float:
@@ -130,7 +239,6 @@ def get_minibatches(inputs: torch.Tensor, chunksize: Optional[int] = 1024 * 8):
 def log_losses(writer: SummaryWriter,
                mode: Literal["train", "val", "val-optim"],
                i: int,
-               iteration: int,
                time_taken: float,
                losses: "OrderedDict[float, float, float, float, float]",
                learning_rate: Optional[float] = None) -> str:
@@ -144,7 +252,7 @@ def log_losses(writer: SummaryWriter,
         log_string += f"[VAL   ] Iter: {i:>8} "
     else:
         log_string += f"[VALOPT] Iter: {i:>8} "
-    log_string += f"Load Iter: {iteration:>8} Time taken: {time_taken:>4.4f} "
+    log_string += f"Time taken: {time_taken:>4.4f} "
 
     if learning_rate:
         log_string += f"Learning rate: {learning_rate:0.8f} "
