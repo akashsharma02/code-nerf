@@ -61,4 +61,4 @@ nerf:
     train:
         chunksize: 1024
     validation:
-        chunksize: 2048
+        chunksize: 1024

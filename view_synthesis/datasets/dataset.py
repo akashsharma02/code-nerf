@@ -37,15 +37,8 @@ class SRNDataset(torch.utils.data.Dataset):
             if tmp.exists():
                 self.base_path = tmp
 
-        if stage == "train":
-            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:30]
-            self.num_objects = len(self.intrinsic)
-        elif stage == "val":
-            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:2]
-            self.num_objects = len(self.intrinsic)
-        else:
-            self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
-            self.num_objects = len(self.intrinsic)
+        self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
+        self.num_objects = len(self.intrinsic)
 
         self.rgb_all_filenames, self.pose_all_filenames = [], []
         for index, intrinsic_path in enumerate(self.intrinsic):

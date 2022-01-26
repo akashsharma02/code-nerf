@@ -76,6 +76,14 @@ class FlexibleNeRFModel(torch.nn.Module):
             return self.fc_out(out)
 
 
+def get_params_tensor(model, is_distributed):
+    if is_distributed:
+        shape_params, texture_params = model.module.get_params_tensor()
+    else:
+        shape_params, texture_params = model.get_params_tensor()
+    return shape_params, texture_params
+
+
 class ShapeTextureEmbedding(torch.nn.Module):
     def __init__(
         self,
