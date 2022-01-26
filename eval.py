@@ -15,6 +15,7 @@ from view_synthesis.cfgnode import CfgNode
 from view_synthesis import utils
 import view_synthesis.nerf as nerf
 from view_synthesis.nerf import RaySampler, PointSampler, PositionalEmbedder
+torch.set_printoptions(sci_mode=False)
 
 
 def eval(rank: int, cfg: CfgNode) -> None:
@@ -37,9 +38,10 @@ def eval(rank: int, cfg: CfgNode) -> None:
 
     # Load Data
     dataloader, dataset = utils.prepare_dataloader("val", cfg)
+    _, train_dataset = utils.prepare_dataloader("train", cfg)
 
     # Prepare Model, Optimizer, and load checkpoint
-    models = utils.prepare_models(cfg, dataset.num_objects)
+    models = utils.prepare_models(cfg, train_dataset.num_objects)
     optimizer, scheduler = utils.prepare_optimizer(cfg, models)
     start_iter = utils.load_checkpoint(cfg, models, optimizer)
 
@@ -52,8 +54,8 @@ def eval(rank: int, cfg: CfgNode) -> None:
     # Prepare Positional Embedding functions
     embedders = nerf.prepare_embedders(cfg, datatype, device)
 
-    total_load_iterations = cfg.experiment.iterations // cfg.dataset.train_batch_size
-    for iteration in range(start_iter, total_load_iterations):
+    total_load_iterations = cfg.experiment.iterations // cfg.dataset.val_batch_size
+    for iteration in range(0, total_load_iterations):
         validate(cfg, iteration, dataloader, models, samplers, embedders, writer, device)
 
 
@@ -104,9 +106,15 @@ def validate(cfg: CfgNode,
     texture_embedding = all_texture_embedding.mean(dim=0, keepdim=True).clone().detach().requires_grad_(True)
 
     # TODO: Camera pose optimization
-    optimizer = getattr(torch.optim, cfg.optimizer.val_type)(
-        [shape_embedding, texture_embedding],
-        lr=cfg.optimizer.val_lr,
+    cam_pose_initial = torch.eye(4).to(device)
+    cam_pose_initial[2, 3] = 1
+
+    delta_pose = torch.normal(0.0, torch.empty(1, 6).fill_(1e-6)).to(device).requires_grad_(True)
+
+    optimizer = getattr(torch.optim, cfg.optimizer.val_type)([
+        {'params': [shape_embedding, texture_embedding]},
+        {'params': delta_pose, 'lr': cfg.optimizer.pose_lr},
+    ], lr=cfg.optimizer.val_lr,
     )
 
     for val_iter in range(0, cfg.experiment.val_iterations):
@@ -114,7 +122,8 @@ def validate(cfg: CfgNode,
         for _, model in models.items():
             model.eval()
 
-        ro_batch, rd_batch, select_inds = ray_sampler.sample(tform_cam2world=val_data["pose"])
+        cam_pose = utils.SE3Exp(delta_pose) @ cam_pose_initial
+        ro_batch, rd_batch, select_inds = ray_sampler.sample(tform_cam2world=cam_pose)
         tgt_pixel_batch = val_data["color"].flatten(1, 2)
         shape_embedding_batch, texture_embedding_batch = shape_embedding.expand(ro_batch.shape[0], -1), texture_embedding.expand(ro_batch.shape[0], -1)
         tgt_pixel_batch = [tgt_pixel_batch[k, select_inds[k], :] for k in range(cfg.dataset.val_batch_size)]
@@ -145,6 +154,8 @@ def validate(cfg: CfgNode,
             psnr = utils.mse2psnr(nerf_loss_fine.item())
             embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(z_s, p=2) + torch.norm(z_t, p=2))
             loss = nerf_loss_coarse + nerf_loss_fine + embedding_regularization
+            tform_cam2gt = torch.matmul(torch.inverse(val_data["pose"]), cam_pose)
+            pose_error = torch.norm(utils.SE3.Log(tform_cam2gt), p=2)
 
             # Backprop and optimizer step
             optimizer.zero_grad()
@@ -153,9 +164,12 @@ def validate(cfg: CfgNode,
 
         if utils.is_main_process(cfg.is_distributed):
             if val_iter > 0 and val_iter % cfg.experiment.val_print_every == 0:
+                print(f"Camera pose:\n {cam_pose}")
+                print(f"Groundtruth pose:\n {val_data['pose']}")
                 losses_dict = {"nerf_loss_coarse": nerf_loss_coarse.item(),
                                "nerf_loss_fine": nerf_loss_fine.item(),
                                "embedding_loss": embedding_regularization.item(),
+                               "pose_error": pose_error,
                                "total_loss": loss.item(),
                                "psnr": psnr}
                 log_string = utils.log_losses(writer, "val-optim", iteration+val_iter, time.time()-val_then, losses_dict)
@@ -164,7 +178,7 @@ def validate(cfg: CfgNode,
 
     render_then = time.time()
     rgb = nerf.parallel_image_render(cfg,
-                                     val_data["pose"],
+                                     cam_pose,
                                      [shape_embedding, texture_embedding],
                                      models,
                                      (ray_sampler, point_sampler),
