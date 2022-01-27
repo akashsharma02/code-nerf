@@ -18,7 +18,17 @@ from view_synthesis.nerf import RaySampler, PointSampler, PositionalEmbedder
 torch.set_printoptions(sci_mode=False)
 
 
-def pose_spherical(theta, phi, rho):
+def pose_spherical(theta: torch.Tensor, phi: torch.Tensor, rho: torch.Tensor) -> torch.Tensor:
+    """
+    Generates a camera pose viewing the object at origin, where the camera lies on a S^2 sphere facing the object.
+
+    Args:
+        theta: azimuth angle
+        phi: elevation angle
+        rho: radius of the sphere
+    Returns:
+        T_c2w: SE3 transformation from camera to world (4x4 matrix)
+    """
     c2w = torch.eye(n=4, device=theta.device)
     c2w[0, 0], c2w[1, 0] = -torch.sin(phi), torch.cos(phi)
     c2w[0, 1], c2w[1, 1], c2w[2, 1] = -torch.sin(theta) * torch.cos(phi), -torch.sin(theta) * torch.sin(phi), torch.cos(theta)
