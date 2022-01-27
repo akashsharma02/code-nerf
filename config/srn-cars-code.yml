@@ -1,5 +1,5 @@
 experiment:
-    id: cars-code-nerf-refactor-exp2
+    id: cars-code-nerf-refactor-exp3
     logdir: ../logs-new
     randomseed: 55
     iterations: 500000
@@ -44,7 +44,7 @@ nerf:
     ray_sampler:
         num_random_rays: 4096
     point_sampler:
-        num_coarse: 64
+        num_coarse: 32
         num_fine: 128
         near_limit: 0.8
         far_limit: 1.8
@@ -60,6 +60,6 @@ nerf:
         log_sampling_dir: True
     white_background: False
     train:
-        chunksize: 3072
+        chunksize: 4096
     validation:
-        chunksize: 3072
+        chunksize: 4096
