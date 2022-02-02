@@ -5,6 +5,7 @@ import time
 import argparse
 from torch.utils.tensorboard import SummaryWriter
 from collections import OrderedDict
+from itertools import islice
 
 import numpy as np
 import torch
@@ -104,7 +105,8 @@ def validate(cfg: CfgNode,
 
     # Load data independently in all processes as a list of tuples
     # Required since broadcast_object_list requires that each process provides an object list of same size
-    val_data = next(iter(dataloader))
+    val_iterator = iter(dataloader)
+    val_data = next(islice(val_iterator, 5, None))
 
     # Broadcast validation data in rank 0 to all the processes
     if cfg.is_distributed:
@@ -125,8 +127,8 @@ def validate(cfg: CfgNode,
     texture_embedding = all_texture_embedding.mean(dim=0, keepdim=True).clone().detach().requires_grad_(True)
 
     # TODO: Camera pose optimization
-    theta = torch.Tensor([0.2]).to(device).requires_grad_(True)
-    phi = torch.Tensor([1.6]).to(device).requires_grad_(True)
+    theta = torch.Tensor([1.57]).to(device).requires_grad_(True)
+    phi = torch.Tensor([0]).to(device).requires_grad_(True)
     rho = torch.Tensor([1.30]).to(device).requires_grad_(True)
 
     optimizer = getattr(torch.optim, cfg.optimizer.val_type)([
@@ -160,7 +162,7 @@ def validate(cfg: CfgNode,
         tform_cam2gt = torch.matmul(torch.inverse(val_data["pose"]), cam_pose)
         pose_error = torch.norm(utils.SE3.Log(tform_cam2gt), p=2)
         # TODO: Should not add pose_error...... (assumes available ground truth)
-        loss = nerf_loss_coarse + nerf_loss_fine + embedding_regularization + 0.01 * pose_error
+        loss = nerf_loss_coarse + nerf_loss_fine + embedding_regularization  # + 0.01 * pose_error
 
         # Backprop and optimizer step
         optimizer.zero_grad()

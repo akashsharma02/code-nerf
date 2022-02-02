@@ -1,5 +1,5 @@
 experiment:
-    id: cars-code-nerf-val
+    id: cars-code-nerf-val-exp5
     logdir: ../logs-new
     randomseed: 42
     iterations: 100
@@ -7,7 +7,7 @@ experiment:
     validate_every: 50
     save_every: 5000
     print_every: 100
-    val_print_every: 100
+    val_print_every: 5
     regularizer_lambda: 1.0e-6
 
 dataset:
