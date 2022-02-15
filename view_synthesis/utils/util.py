@@ -194,16 +194,16 @@ def load_checkpoint(cfg: CfgNode,
         rank = 0
         if cfg.is_distributed:
             rank = dist.get_rank()
-            map_location = {"cuda:0": f"cuda:{rank}"}
-            checkpoint = torch.load(
-                cfg.load_checkpoint, map_location=map_location)
-            # Ensure that all loading by all processes is done before any process has started saving models
+        map_location = {"cuda:0": f"cuda:{rank}"}
+        checkpoint = torch.load(cfg.load_checkpoint, map_location=map_location)
+        # Ensure that all loading by all processes is done before any process has started saving models
+        if cfg.is_distributed:
             torch.distributed.barrier()
-        else:
-            checkpoint = torch.load(cfg.load_checkpoint)
-            torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(checkpoint, "module")
 
         for model_name, model in models.items():
+            if not cfg.is_distributed:
+                torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
+                    checkpoint[f"model_{model_name}_state_dict"], "module.")
             model.load_state_dict(
                 checkpoint[f"model_{model_name}_state_dict"])
 

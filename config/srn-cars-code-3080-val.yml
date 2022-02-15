@@ -1,5 +1,5 @@
 experiment:
-    id: cars-code-nerf-val
+    id: cars-code-nerf-val-exp5
     logdir: ../logs-new
     randomseed: 42
     iterations: 100
@@ -7,7 +7,7 @@ experiment:
     validate_every: 50
     save_every: 5000
     print_every: 100
-    val_print_every: 100
+    val_print_every: 5
     regularizer_lambda: 1.0e-6
 
 dataset:
@@ -37,16 +37,17 @@ optimizer:
     embedding_lr: 1.0E-3
     val_type: AdamW
     val_lr: 1.0E-2
-    pose_lr: 1.0E-3
+    angle_lr: 5.0E-2
+    radius_lr: 1.0E-1
     scheduler_gamma: 0.1 # No schedule
     scheduler_step_size: 5000000
 
 nerf:
     ray_sampler:
-        num_random_rays: 1024
+        num_random_rays: 2048
     point_sampler:
         num_coarse: 64
-        num_fine: 128
+        num_fine: 64
         near_limit: 0.8
         far_limit: 1.8
         spacing_mode: "lindepth"
@@ -62,4 +63,4 @@ nerf:
     train:
         chunksize: 1024
     validation:
-        chunksize: 1024
+        chunksize: 2048
