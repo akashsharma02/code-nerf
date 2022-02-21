@@ -8,9 +8,9 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as ddp
 
-from view_synthesis.cfgnode import CfgNode
-import view_synthesis.datasets as datasets
-import view_synthesis.models as network_arch
+from ..cfgnode import CfgNode
+from ..datasets import dataset as datasets
+from ..models import model as network_arch
 
 
 def prepare_device(n_gpus_to_use: int, is_distributed: bool) -> Tuple[torch.device, List[int]]:

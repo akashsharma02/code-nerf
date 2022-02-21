@@ -8,8 +8,8 @@ from .volumetric_render import volume_render
 import torch
 import numpy as np
 import torch.distributed as dist
-from view_synthesis.cfgnode import CfgNode
-import view_synthesis.utils as utils
+from ..cfgnode import CfgNode
+from ..utils import util
 
 
 def prepare_samplers(cfg: CfgNode,
@@ -190,10 +190,10 @@ def parallel_image_render(cfg: CfgNode,
         texture_embedding_batch = torch.split(texture_embedding, batchsize_per_process.tolist())[rank].to(device)
 
         # Minibatch the rays allocated to current process
-        ro_minibatches = utils.get_minibatches(ro_batch, cfg.nerf.validation.chunksize)
-        rd_minibatches = utils.get_minibatches(rd_batch, cfg.nerf.validation.chunksize)
-        shape_embedding_minibatches = utils.get_minibatches(shape_embedding_batch, cfg.nerf.validation.chunksize)
-        texture_embedding_minibatches = utils.get_minibatches(texture_embedding_batch, cfg.nerf.validation.chunksize)
+        ro_minibatches = util.get_minibatches(ro_batch, cfg.nerf.validation.chunksize)
+        rd_minibatches = util.get_minibatches(rd_batch, cfg.nerf.validation.chunksize)
+        shape_embedding_minibatches = util.get_minibatches(shape_embedding_batch, cfg.nerf.validation.chunksize)
+        texture_embedding_minibatches = util.get_minibatches(texture_embedding_batch, cfg.nerf.validation.chunksize)
 
         rgb_batches = []
         for ro, rd, z_s, z_t in zip(ro_minibatches, rd_minibatches, shape_embedding_minibatches, texture_embedding_minibatches):
@@ -214,7 +214,7 @@ def parallel_image_render(cfg: CfgNode,
         all_rgb_batches = [torch.zeros_like(rgb_batches) for _ in range(cfg.gpus)]
         torch.distributed.all_gather(all_rgb_batches, rgb_batches)
 
-        if utils.is_main_process(cfg.is_distributed):
+        if util.is_main_process(cfg.is_distributed):
             for i, size in enumerate(batchsize_per_process):
                 all_rgb_batches[i] = all_rgb_batches[i][: size, ...]
             all_rgb_batches = torch.cat(all_rgb_batches, dim=0)
