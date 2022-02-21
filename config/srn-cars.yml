@@ -1,6 +1,6 @@
 experiment:
     id: srn-cars-test1
-    logdir: logs
+    logdir: /home/akashsharma/tmp/logs-srn-cars-train
     randomseed: 42
     iterations: 100000
     validate_every: 500

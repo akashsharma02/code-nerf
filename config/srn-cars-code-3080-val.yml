@@ -1,6 +1,6 @@
 experiment:
     id: cars-code-nerf-val-exp5
-    logdir: ../logs-new
+    logdir: /home/akashsharma/tmp/logs-srn-cars-code-3080-val
     randomseed: 42
     iterations: 100
     val_iterations: 500

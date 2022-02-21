@@ -1,6 +1,6 @@
 experiment:
     id: cars-code-nerf-single-mipnerf-volume-render
-    logdir: ../logs-new
+    logdir: /home/akashsharma/tmp/logs-srn-cars-3080-train
     randomseed: 42
     iterations: 100000
     val_iterations: 300

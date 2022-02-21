@@ -1,6 +1,6 @@
 experiment:
     id: cars-code-nerf-refactor-exp3
-    logdir: ../logs-new
+    logdir: /home/akashsharma/tmp/logs-srn-cars-code-train
     randomseed: 55
     iterations: 500000
     val_iterations: 300
