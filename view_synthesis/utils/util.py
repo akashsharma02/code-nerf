@@ -105,7 +105,7 @@ def prepare_models(cfg: CfgNode,
 
     """
     rank = 0
-    if cfg.is_distributed:
+    if hasattr(cfg, "is_distributed") and cfg.is_distributed:
         rank = dist.get_rank()
 
     models = OrderedDict()
@@ -136,7 +136,7 @@ def prepare_models(cfg: CfgNode,
         include_input_dir=cfg.nerf.embedder.include_input_dir,
     ).to(rank)
 
-    if cfg.is_distributed:
+    if hasattr(cfg, "is_distributed") and cfg.is_distributed:
         models["embedding"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
         models["nerf_coarse"] = ddp(models['nerf_coarse'], device_ids=[rank], output_device=rank)
         models["nerf_fine"] = ddp(models['nerf_fine'], device_ids=[rank], output_device=rank)

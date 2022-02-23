@@ -1,4 +1,5 @@
 from typing import Tuple, Union
+from numpy.typing import DTypeLike
 import numpy as np
 import torch
 
@@ -7,7 +8,7 @@ class RaySampler(object):
 
     """RaySampler samples rays for a given image size and intrinsics """
 
-    def __init__(self, height: int, width: int, intrinsics: Union[torch.Tensor, np.ndarray], sample_size: int, device: torch.cuda.Device):
+    def __init__(self, height: int, width: int, intrinsics: Union[torch.Tensor, np.ndarray], sample_size: int, device: torch.cuda.Device, datatype: DTypeLike):
         """ Prepares a ray bundle for a given image size and intrinsics
 
         :Function: intrinsics: torch.Tensor 4x4
@@ -22,7 +23,7 @@ class RaySampler(object):
         self.device = device
 
         if isinstance(intrinsics, np.ndarray):
-            intrinsics = torch.from_numpy(intrinsics)
+            intrinsics = torch.from_numpy(intrinsics).to(datatype)
         assert intrinsics.shape == torch.Size(
             [4, 4]), "Incorrect intrinsics shape"
         self.intrinsics = intrinsics

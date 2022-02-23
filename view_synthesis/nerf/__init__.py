@@ -26,7 +26,8 @@ def prepare_samplers(cfg: CfgNode,
                              width,
                              intrinsics,
                              sample_size=cfg.nerf.ray_sampler.num_random_rays,
-                             device=device)
+                             device=device,
+                             datatype=datatype)
     point_sampler = PointSampler(cfg.nerf.point_sampler.num_coarse,
                                  cfg.nerf.point_sampler.num_fine,
                                  cfg.nerf.point_sampler.near_limit,
