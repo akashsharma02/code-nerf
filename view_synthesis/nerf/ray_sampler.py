@@ -32,13 +32,14 @@ class RaySampler(object):
         self.cx = self.intrinsics[..., 0, 2]
         self.cy = self.intrinsics[..., 1, 2]
 
-        ii, jj = meshgrid_xy(
+        ii, jj = torch.meshgrid(
             torch.arange(
                 width, dtype=self.intrinsics.dtype, device=self.device
             ),
             torch.arange(
                 height, dtype=self.intrinsics.dtype, device=self.device
             ),
+            indexing='xy'
         )
         self.directions = torch.stack(
             [

@@ -64,7 +64,7 @@ def prepare_dataloader(stage: Literal["train", "val"], cfg: CfgNode) -> torch.ut
     :returns: TODO
 
     """
-
+    is_distributed = hasattr(cfg, "is_distributed") and cfg.is_distributed
     dataset = getattr(datasets, cfg.dataset.type)(
         path=cfg.dataset.basedir,
         stage=stage
@@ -76,7 +76,7 @@ def prepare_dataloader(stage: Literal["train", "val"], cfg: CfgNode) -> torch.ut
         num_samples=cfg.experiment.iterations
     )
 
-    if cfg.is_distributed:
+    if is_distributed:
         sampler = torch.utils.data.DistributedSampler(
             dataset,
             num_replicas=dist.get_world_size(),
@@ -188,20 +188,19 @@ def load_checkpoint(cfg: CfgNode,
 
     """
     start_iter = 0
+    is_distributed = hasattr(cfg, "is_distributed") and cfg.is_distributed
+    rank = 0 if not is_distributed else dist.get_rank()
 
     checkpoint_file = Path(cfg.load_checkpoint)
     if checkpoint_file.exists() and checkpoint_file.is_file() and checkpoint_file.suffix == ".ckpt":
-        rank = 0
-        if cfg.is_distributed:
-            rank = dist.get_rank()
         map_location = {"cuda:0": f"cuda:{rank}"}
         checkpoint = torch.load(cfg.load_checkpoint, map_location=map_location)
         # Ensure that all loading by all processes is done before any process has started saving models
-        if cfg.is_distributed:
+        if is_distributed:
             torch.distributed.barrier()
 
         for model_name, model in models.items():
-            if not cfg.is_distributed:
+            if not is_distributed:
                 torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
                     checkpoint[f"model_{model_name}_state_dict"], "module.")
             model.load_state_dict(

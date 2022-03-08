@@ -158,7 +158,9 @@ def parallel_image_render(cfg: CfgNode,
     """
 
     rank = 0
-    if cfg.is_distributed:
+    is_distributed = hasattr(cfg, "is_distributed") and cfg.is_distributed
+    n_gpus = 1 if not hasattr(cfg, "gpus") else cfg.gpus
+    if is_distributed:
         rank = dist.get_rank()
 
     for _, model in models.items():
@@ -174,12 +176,12 @@ def parallel_image_render(cfg: CfgNode,
         shape_embedding = shape_embedding.expand(num_rays, -1)
         texture_embedding = texture_embedding.expand(num_rays, -1)
 
-        batchsize_per_process = torch.full([cfg.gpus], (num_rays / cfg.gpus), dtype=int)
+        batchsize_per_process = torch.full([n_gpus], (num_rays / n_gpus), dtype=int)
         padding = num_rays - torch.sum(batchsize_per_process)
         batchsize_per_process[-1] = num_rays - torch.sum(batchsize_per_process[: -1])
         assert torch.sum(batchsize_per_process) == num_rays, "Mismatch in batchsize per process and total number of rays"
 
-        padding_per_process = torch.zeros([cfg.gpus], dtype=int)
+        padding_per_process = torch.zeros([n_gpus], dtype=int)
         if padding > 0:
             padding_per_process[: -1] = padding
         assert padding + batchsize_per_process[0] == batchsize_per_process[-1], "Incorrect calculation of padding"
@@ -204,7 +206,7 @@ def parallel_image_render(cfg: CfgNode,
             rgb_batches.append(rgb_fine)
         rgb_batches = torch.cat(rgb_batches, dim=0)
 
-        if not cfg.is_distributed:
+        if not is_distributed:
             return rgb_batches
 
         # Pad image chunks to get equal chunksize for all_gather/gather
@@ -212,10 +214,10 @@ def parallel_image_render(cfg: CfgNode,
                                  dtype=rgb_batches.dtype,
                                  device=rgb_batches.device)
         rgb_batches = torch.cat([rgb_batches, padded_rgb], dim=0)
-        all_rgb_batches = [torch.zeros_like(rgb_batches) for _ in range(cfg.gpus)]
+        all_rgb_batches = [torch.zeros_like(rgb_batches) for _ in range(n_gpus)]
         torch.distributed.all_gather(all_rgb_batches, rgb_batches)
 
-        if util.is_main_process(cfg.is_distributed):
+        if util.is_main_process(is_distributed):
             for i, size in enumerate(batchsize_per_process):
                 all_rgb_batches[i] = all_rgb_batches[i][: size, ...]
             all_rgb_batches = torch.cat(all_rgb_batches, dim=0)

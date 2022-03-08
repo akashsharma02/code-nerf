@@ -126,7 +126,6 @@ def validate(cfg: CfgNode,
     shape_embedding = all_shape_embedding.mean(dim=0, keepdim=True).clone().detach().requires_grad_(True)
     texture_embedding = all_texture_embedding.mean(dim=0, keepdim=True).clone().detach().requires_grad_(True)
 
-    # TODO: Camera pose optimization
     theta = torch.Tensor([1.57]).to(device).requires_grad_(True)
     phi = torch.Tensor([0]).to(device).requires_grad_(True)
     rho = torch.Tensor([1.30]).to(device).requires_grad_(True)
