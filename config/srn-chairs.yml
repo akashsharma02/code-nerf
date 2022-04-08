@@ -41,8 +41,8 @@ nerf:
     point_sampler:
         num_coarse: 64
         num_fine: 128
-        near_limit: 0.8
-        far_limit: 1.8
+        near_limit: 1.25
+        far_limit: 2.75
         spacing_mode: "lindepth"
         perturb: True
     embedder:

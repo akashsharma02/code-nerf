@@ -221,7 +221,6 @@ def parallel_image_render(cfg: CfgNode,
             for i, size in enumerate(batchsize_per_process):
                 all_rgb_batches[i] = all_rgb_batches[i][: size, ...]
             all_rgb_batches = torch.cat(all_rgb_batches, dim=0)
-
             return all_rgb_batches
         else:
             return None

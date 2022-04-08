@@ -160,49 +160,49 @@ def validate(cfg: CfgNode,
         embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(z_s, p=2) + torch.norm(z_t, p=2))
         tform_cam2gt = torch.matmul(torch.inverse(val_data["pose"]), cam_pose)
         pose_error = torch.norm(utils.SE3.Log(tform_cam2gt), p=2)
-        # TODO: Should not add pose_error...... (assumes available ground truth)
-        loss = nerf_loss_coarse + nerf_loss_fine + embedding_regularization  # + 0.01 * pose_error
+        loss = nerf_loss_coarse + nerf_loss_fine + embedding_regularization
 
         # Backprop and optimizer step
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        if utils.is_main_process(cfg.is_distributed):
-            if val_iter % cfg.experiment.val_print_every == 0 or val_iter == cfg.experiment.val_iterations-1:
+        if (val_iter != 0 and val_iter % cfg.experiment.val_print_every == 0) or val_iter == cfg.experiment.val_iterations-1:
+            if utils.is_main_process(cfg.is_distributed):
                 losses_dict = {"nerf_loss_coarse": nerf_loss_coarse.item(),
                                "nerf_loss_fine": nerf_loss_fine.item(),
                                "embedding_loss": embedding_regularization.item(),
                                "pose_error": pose_error,
                                "total_loss": loss.item(),
                                "psnr": psnr}
-                log_iter = iteration*cfg.experiment.val_iterations + val_iter
+                log_iter = val_iter
                 log_string = utils.log_losses(writer, "val-optim", log_iter, time.time()-val_then, losses_dict)
                 print(log_string)
 
-                render_then = time.time()
-                rgb = nerf.parallel_image_render(cfg,
-                                                 cam_pose,
-                                                 [shape_embedding, texture_embedding],
-                                                 models,
-                                                 (ray_sampler, point_sampler),
-                                                 embedders,
-                                                 device)
+    render_then = time.time()
+    rgb = nerf.parallel_image_render(cfg,
+                                     cam_pose,
+                                     [shape_embedding, texture_embedding],
+                                     models,
+                                     (ray_sampler, point_sampler),
+                                     embedders,
+                                     device)
+    if utils.is_main_process(cfg.is_distributed):
+        assert rgb is not None, "Main process must contain rgb"
 
-                assert rgb is not None, "Main process must contain rgb"
+        target_pixels = val_data["color"].view(-1, 4)
 
-                target_pixels = val_data["color"].view(-1, 4)
-                loss = torch.nn.functional.mse_loss(rgb[..., : 3], target_pixels[..., : 3])
-                psnr = utils.mse2psnr(loss.item())
+        loss = torch.nn.functional.mse_loss(rgb[..., : 3], target_pixels[..., : 3])
+        psnr = utils.mse2psnr(loss.item())
 
-                target_rgb = target_pixels.reshape(list(val_data["color"].shape[: -1]) + [4])
-                rgb = rgb.reshape(list(val_data["color"].shape[: -1]) + [rgb.shape[-1]])
+        target_rgb = target_pixels.reshape(list(val_data["color"].shape[: -1]) + [4])
+        rgb = rgb.reshape(list(val_data["color"].shape[: -1]) + [rgb.shape[-1]])
 
-                render_losses_dict = {"loss": loss, "psnr": psnr}
-                log_string = utils.log_losses(writer, "val", log_iter, time.time()-render_then, render_losses_dict)
-                writer.add_images("val/rgb_image", rgb[..., : 3], log_iter, dataformats='NHWC')
-                writer.add_images("val/target_image", target_rgb[..., : 3], log_iter, dataformats='NHWC')
-                print(log_string)
+        render_losses_dict = {"loss": loss, "psnr": psnr}
+        log_string = utils.log_losses(writer, "val", iteration, time.time()-render_then, render_losses_dict)
+        writer.add_images("val/rgb_image", rgb[..., : 3], iteration, dataformats='NHWC')
+        writer.add_images("val/target_image", target_rgb[..., : 3], iteration, dataformats='NHWC')
+        print(log_string)
 
 
 def init_process(rank: int, fn: FunctionType, cfg: CfgNode, backend: str = "gloo"):
