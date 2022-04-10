@@ -1,6 +1,7 @@
 experiment:
-    id: cars-code-nerf-refactor-exp3
-    logdir: /data3/tkhurana/misc/tmp/logs-srn-cars-code-train
+    id: cars-code-nerf-newmodel-exp1-1
+    # logdir: /data3/tkhurana/misc/tmp/logs-srn-cars-code-train
+    logdir: /home/tkhurana/Documents/akash/tmp/logs-srn-cars-code-train
     randomseed: 55
     iterations: 500000
     val_iterations: 300
@@ -12,7 +13,9 @@ experiment:
 
 dataset:
     type: SRNDataset
-    basedir: /data3/tkhurana/datasets/srn/srn_cars
+    # basedir: /data3/tkhurana/datasets/srn/srn_cars
+    # basedir: /scratch/tkhurana/datasets/srn/srn_cars
+    basedir: /home/tkhurana/Documents/akash/datasets/srn/srn_cars
     image_size: 128
     world_scale: 1.0
     train_batch_size: 4  #TODO: Needs to be one, multi batch size is not handled
@@ -28,8 +31,8 @@ models:
         type: CodeNeRFModel
         hidden_size: 256
     embedding:
-      shape_code_size: 256
-      texture_code_size: 256
+      shape_code_size: 128
+      texture_code_size: 128
 
 optimizer:
     type: AdamW
@@ -37,12 +40,14 @@ optimizer:
     embedding_lr: 1.0E-3
     val_type: AdamW
     val_lr: 5.0E-3
+    angle_lr: 5.0E-2
+    radius_lr: 1.0E-1
     scheduler_gamma: 0.1 # No schedule
     scheduler_step_size: 5000000
 
 nerf:
     ray_sampler:
-        num_random_rays: 4096
+        num_random_rays: 6144
     point_sampler:
         num_coarse: 32
         num_fine: 128
@@ -60,6 +65,6 @@ nerf:
         log_sampling_dir: True
     white_background: False
     train:
-        chunksize: 4096
+        chunksize: 6144
     validation:
         chunksize: 4096

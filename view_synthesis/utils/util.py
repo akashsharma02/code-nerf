@@ -117,7 +117,6 @@ def prepare_models(cfg: CfgNode,
 
     models['nerf_coarse'] = getattr(network_arch, cfg.models.nerf_coarse.type)(
         hidden_size=cfg.models.nerf_coarse.hidden_size,
-        num_embeddings=num_objects,
         shape_code_size=cfg.models.embedding.shape_code_size,
         texture_code_size=cfg.models.embedding.texture_code_size,
         num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
@@ -127,7 +126,6 @@ def prepare_models(cfg: CfgNode,
     ).to(rank)
     models['nerf_fine'] = getattr(network_arch, cfg.models.nerf_fine.type)(
         hidden_size=cfg.models.nerf_fine.hidden_size,
-        num_embeddings=num_objects,
         shape_code_size=cfg.models.embedding.shape_code_size,
         texture_code_size=cfg.models.embedding.texture_code_size,
         num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,

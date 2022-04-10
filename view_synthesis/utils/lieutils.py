@@ -56,7 +56,7 @@ def get_small_and_large_angle_inds(theta: torch.Tensor, eps: float = 1e-3):
 
 
 def sin_theta_by_theta(theta: torch.Tensor, eps: float = 1e-3):
-    r"""Computes :math:`\frac{sin \theta}{\theta}`. 
+    r"""Computes :math:`\frac{sin \theta}{\theta}`.
 
     Args:
         theta (torch.Tensor): Angle (magnitude of axis-angle vector).
@@ -82,7 +82,7 @@ def sin_theta_by_theta(theta: torch.Tensor, eps: float = 1e-3):
 
 
 def grad_sin_theta_by_theta(theta: torch.Tensor, eps: float = 1e-3):
-    r"""Computes :math:`\frac{\partial sin \theta}{\partial \theta \theta}`. 
+    r"""Computes :math:`\frac{\partial sin \theta}{\partial \theta \theta}`.
 
     Args:
         theta (torch.Tensor): Angle (magnitude of axis-angle vector).
@@ -111,7 +111,7 @@ def grad_sin_theta_by_theta(theta: torch.Tensor, eps: float = 1e-3):
 
 
 def grad_sin_theta_by_theta_div_theta(theta: torch.Tensor, eps: float = 1e-3):
-    r"""Computes :math:`\frac{\partial sin \theta}{\partial \theta \theta} \frac{1}{\theta}`. 
+    r"""Computes :math:`\frac{\partial sin \theta}{\partial \theta \theta} \frac{1}{\theta}`.
 
     Args:
         theta (torch.Tensor): Angle (magnitude of axis-angle vector).
@@ -140,7 +140,7 @@ def grad_sin_theta_by_theta_div_theta(theta: torch.Tensor, eps: float = 1e-3):
 
 
 def one_minus_cos_theta_by_theta_sq(theta: torch.Tensor, eps: float = 1e-3):
-    r"""Computes :math:`\frac{\theta}{sin \theta}`. 
+    r"""Computes :math:`\frac{\theta}{sin \theta}`.
 
     Args:
         theta (torch.Tensor): Angle (magnitude of axis-angle vector).
@@ -166,7 +166,7 @@ def one_minus_cos_theta_by_theta_sq(theta: torch.Tensor, eps: float = 1e-3):
 
 
 def grad_one_minus_cos_theta_by_theta_sq(theta: torch.Tensor, eps: float = 1e-3):
-    r"""Computes :math:`\frac{\partial \theta}{\partial \theta sin \theta}`. 
+    r"""Computes :math:`\frac{\partial \theta}{\partial \theta sin \theta}`.
 
     Args:
         theta (torch.Tensor): Angle (magnitude of axis-angle vector).
@@ -199,7 +199,7 @@ def grad_one_minus_cos_theta_by_theta_sq(theta: torch.Tensor, eps: float = 1e-3)
 def grad_one_minus_cos_theta_by_theta_sq_div_sin_theta(
     theta: torch.Tensor, eps: float = 1e-3
 ):
-    r"""Computes :math:`\frac{\partial \theta}{\partial \theta sin \theta} \frac{1}{sin \theta}`. 
+    r"""Computes :math:`\frac{\partial \theta}{\partial \theta sin \theta} \frac{1}{sin \theta}`.
 
     Args:
         theta (torch.Tensor): Angle (magnitude of axis-angle vector).
@@ -226,7 +226,7 @@ def grad_one_minus_cos_theta_by_theta_sq_div_sin_theta(
 
 
 def one_minus_cos_theta_by_theta_sq(theta: torch.Tensor, eps: float = 1e-3):
-    r"""Computes :math:`\frac{1 - cos \theta}{\theta^2}`. 
+    r"""Computes :math:`\frac{1 - cos \theta}{\theta^2}`.
 
     Args:
         theta (torch.Tensor): Angle (magnitude of axis-angle vector).
@@ -289,7 +289,7 @@ def grad_one_minus_cos_theta_by_theta_sq(theta: torch.Tensor, eps: float = 1e-3)
 
 
 def theta_minus_sin_theta_by_theta_cube(theta: torch.Tensor, eps: float = 1e-3):
-    r"""Computes :math:`\frac{\theta - sin \theta}{\theta^3}`. 
+    r"""Computes :math:`\frac{\theta - sin \theta}{\theta^3}`.
 
     Args:
         theta (torch.Tensor): Angle (magnitude of axis-angle vector).
@@ -550,7 +550,7 @@ class SO3:
             aw1 = torch.sqrt(A[:, 0, 0])
             aw2 = torch.sqrt(A[:, 1, 1])
             aw3 = torch.sqrt(A[:, 2, 2])
-            sgn_3 = torh.sign(A[:, 0, 2])
+            sgn_3 = torch.sign(A[:, 0, 2])
             sgn_3[sgn_3 == 0] = 1
             sgn_23 = torch.sign(A[:, 1, 2])
             sgn_23[sgn_23 == 0] = 1

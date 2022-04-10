@@ -1,10 +1,10 @@
 experiment:
-    id: cars-code-nerf-single-mipnerf-volume-render
+    id: cars-code-nerf-single-mipnerf-exp1
     logdir: /home/akashsharma/tmp/logs-srn-cars-3080-train
     randomseed: 42
     iterations: 100000
     val_iterations: 300
-    validate_every: 100
+    validate_every: 1000
     save_every: 5000
     print_every: 100
     val_print_every: 100
@@ -22,14 +22,14 @@ dataset:
 
 models:
     nerf_coarse:
-        type: CodeNeRFModel
-        hidden_size: 256
+        type: DisentangledNeRFModel
+        hidden_size: 128
     nerf_fine:
-        type: CodeNeRFModel
-        hidden_size: 256
+        type: DisentangledNeRFModel
+        hidden_size: 128
     embedding:
-      shape_code_size: 256
-      texture_code_size: 256
+      shape_code_size: 128
+      texture_code_size: 128
 
 optimizer:
     type: AdamW
@@ -37,6 +37,8 @@ optimizer:
     embedding_lr: 1.0E-3
     val_type: AdamW
     val_lr: 1.0E-2
+    angle_lr: 5.0E-2
+    radius_lr: 1.0E-1
     scheduler_gamma: 0.1 # No schedule
     scheduler_step_size: 5000000
 
@@ -45,7 +47,7 @@ nerf:
         num_random_rays: 4096
     point_sampler:
         num_coarse: 64
-        num_fine: 128
+        num_fine: 64
         near_limit: 0.8
         far_limit: 1.8
         spacing_mode: "lindepth"
