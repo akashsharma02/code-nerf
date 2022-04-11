@@ -1,7 +1,7 @@
 experiment:
-    id: cars-code-nerf-newmodel-exp1-1
-    # logdir: /data3/tkhurana/misc/tmp/logs-srn-cars-code-train
-    logdir: /home/tkhurana/Documents/akash/tmp/logs-srn-cars-code-train
+    id: cars-disentanglednerf-model-exp-1
+    logdir: /data3/tkhurana/misc/tmp/logs-srn-cars-code-train
+    # logdir: /home/tkhurana/Documents/akash/tmp/logs-srn-cars-code-train
     randomseed: 55
     iterations: 500000
     val_iterations: 300
@@ -14,8 +14,8 @@ experiment:
 dataset:
     type: SRNDataset
     # basedir: /data3/tkhurana/datasets/srn/srn_cars
-    # basedir: /scratch/tkhurana/datasets/srn/srn_cars
-    basedir: /home/tkhurana/Documents/akash/datasets/srn/srn_cars
+    basedir: /scratch/tkhurana/datasets/srn/srn_cars
+    # basedir: /home/tkhurana/Documents/akash/datasets/srn/srn_cars
     image_size: 128
     world_scale: 1.0
     train_batch_size: 4  #TODO: Needs to be one, multi batch size is not handled
@@ -25,10 +25,10 @@ dataset:
 
 models:
     nerf_coarse:
-      type: CodeNeRFModel
+      type: DisentangledNeRFModel
       hidden_size: 256
     nerf_fine:
-        type: CodeNeRFModel
+        type: DisentangledNeRFModel
         hidden_size: 256
     embedding:
       shape_code_size: 128
