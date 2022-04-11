@@ -147,10 +147,11 @@ class CodeNeRFModel(torch.nn.Module):
 
         self.shape_code_layer1 = torch.nn.Linear(self.shape_code_size, self.shape_code_size)
         self.shape_code_layer2 = torch.nn.Linear(self.shape_code_size, self.shape_code_size)
-        self.texture_code_layer1 = torch.nn.Linear(self.shape_code_size, self.shape_code_size)
+        self.texture_code_layer1 = torch.nn.Linear(self.texture_code_size, self.texture_code_size)
+        self.texture_code_layer2 = torch.nn.Linear(self.texture_code_size, self.texture_code_size)
 
         self.layer_dir1 = torch.nn.Linear(self.dim_dir + self.shape_code_size, self.hidden_size)
-        self.layer_dir2 = torch.nn.Linear(self.hidden_size, self.hidden_size)
+        self.layer_dir2 = torch.nn.Linear(self.hidden_size + self.texture_code_size, self.hidden_size)
 
         self.fc_rgb = torch.nn.Linear(self.hidden_size + self.texture_code_size, 3)
 
@@ -174,6 +175,7 @@ class CodeNeRFModel(torch.nn.Module):
         z_s_out2 = self.activation(self.shape_code_layer2(z_s))
 
         z_t_out = self.activation(self.texture_code_layer1(z_t))
+        z_t_out2 = self.activation(self.texture_code_layer2(z_t))
 
         xyz_out = self.activation(self.layer_xyz1(xyz))
         xyz_out = torch.cat((xyz_out, z_s_out), dim=-1)
@@ -186,8 +188,9 @@ class CodeNeRFModel(torch.nn.Module):
 
         view_in = torch.cat((feat, view), dim=-1)
         view_out = self.activation(self.layer_dir1(view_in))
-        view_out = self.activation(self.layer_dir2(view_out))
         view_out = torch.cat((view_out, z_t_out), dim=-1)
+        view_out = self.activation(self.layer_dir2(view_out))
+        view_out = torch.cat((view_out, z_t_out2), dim=-1)
         rgb = self.fc_rgb(view_out)
 
         return torch.cat((rgb, sigma), dim=-1)

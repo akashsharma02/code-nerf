@@ -1,4 +1,4 @@
-from typing import List, Union, Tuple, OrderedDict
+from typing import List, Union, Tuple, OrderedDict, Optional
 from numpy.typing import DTypeLike
 from .ray_sampler import RaySampler
 from .point_sampler import PointSampler
@@ -75,7 +75,7 @@ def predict_radiance_and_render(rays: Tuple[torch.Tensor, torch.Tensor],
                                 point_sampler: PointSampler,
                                 embedders: List[Union[PositionalEmbedder, None]],
                                 coarse_model: torch.nn.Module,
-                                fine_model: torch.nn.Module,
+                                fine_model: Optional[torch.nn.Module],
                                 latent_embedding: Tuple[torch.Tensor, torch.Tensor]
                                 ) -> Tuple[torch.Tensor, torch.Tensor]:
     (ro, rd) = rays
@@ -84,10 +84,11 @@ def predict_radiance_and_render(rays: Tuple[torch.Tensor, torch.Tensor],
     (rgb_coarse, _, _, weights, _) = volume_render(radiance_field_coarse, z_vals_coarse, rd)
 
     # Pass through nerf_fine model
-    pts_fine, z_vals_fine = point_sampler.sample_pdf(ro, rd, weights[..., 1:-1], z_vals_coarse)
-    radiance_field_fine = forward_pass(fine_model, embedders, rd, pts_fine, latent_embedding)
-    (rgb_fine, _, _, _, _) = volume_render(radiance_field_fine, z_vals_fine, rd)
-
+    rgb_fine = None
+    if fine_model:
+        pts_fine, z_vals_fine = point_sampler.sample_pdf(ro, rd, weights[..., 1:-1], z_vals_coarse)
+        radiance_field_fine = forward_pass(fine_model, embedders, rd, pts_fine, latent_embedding)
+        (rgb_fine, _, _, _, _) = volume_render(radiance_field_fine, z_vals_fine, rd)
     return rgb_coarse, rgb_fine
 
 
@@ -202,8 +203,12 @@ def parallel_image_render(cfg: CfgNode,
         for ro, rd, z_s, z_t in zip(ro_minibatches, rd_minibatches, shape_embedding_minibatches, texture_embedding_minibatches):
             # Pass through NeRF model
             latent_embedding, rays = (z_s, z_t), (ro, rd)
-            _, rgb_fine = predict_radiance_and_render(rays, point_sampler, embedders, models["nerf_coarse"], models["nerf_fine"], latent_embedding)
-            rgb_batches.append(rgb_fine)
+            rgb_coarse, rgb_fine = predict_radiance_and_render(rays, point_sampler, embedders,
+                                                               models["nerf_coarse"], models["nerf_fine"] if "nerf_fine" in models else None, latent_embedding)
+            if rgb_fine:
+                rgb_batches.append(rgb_fine)
+            else:
+                rgb_batches.append(rgb_coarse)
         rgb_batches = torch.cat(rgb_batches, dim=0)
 
         if not is_distributed:

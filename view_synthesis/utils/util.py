@@ -124,20 +124,22 @@ def prepare_models(cfg: CfgNode,
         num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
         include_input_dir=cfg.nerf.embedder.include_input_dir,
     ).to(rank)
-    models['nerf_fine'] = getattr(network_arch, cfg.models.nerf_fine.type)(
-        hidden_size=cfg.models.nerf_fine.hidden_size,
-        shape_code_size=cfg.models.embedding.shape_code_size,
-        texture_code_size=cfg.models.embedding.texture_code_size,
-        num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
-        include_input_xyz=cfg.nerf.embedder.include_input_xyz,
-        num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
-        include_input_dir=cfg.nerf.embedder.include_input_dir,
-    ).to(rank)
+    if hasattr(cfg.models, "nerf_fine"):
+        models['nerf_fine'] = getattr(network_arch, cfg.models.nerf_fine.type)(
+            hidden_size=cfg.models.nerf_fine.hidden_size,
+            shape_code_size=cfg.models.embedding.shape_code_size,
+            texture_code_size=cfg.models.embedding.texture_code_size,
+            num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
+            include_input_xyz=cfg.nerf.embedder.include_input_xyz,
+            num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
+            include_input_dir=cfg.nerf.embedder.include_input_dir,
+        ).to(rank)
 
     if hasattr(cfg, "is_distributed") and cfg.is_distributed:
         models["embedding"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
         models["nerf_coarse"] = ddp(models['nerf_coarse'], device_ids=[rank], output_device=rank)
-        models["nerf_fine"] = ddp(models['nerf_fine'], device_ids=[rank], output_device=rank)
+        if hasattr(cfg.models, "nerf_fine"):
+            models["nerf_fine"] = ddp(models['nerf_fine'], device_ids=[rank], output_device=rank)
 
     return models
 
@@ -153,20 +155,18 @@ def prepare_optimizer(cfg: CfgNode,
     Return: TODO
 
     """
+    var_list = [{'params': models['embedding'].parameters(), 'lr': cfg.optimizer.embedding_lr}]
 
-    optimizer = getattr(torch.optim, cfg.optimizer.type)([
-        {'params': models['nerf_coarse'].parameters()},
-        {'params': models['nerf_fine'].parameters()},
-        {'params': models['embedding'].parameters(), 'lr': cfg.optimizer.embedding_lr}
-    ], lr=cfg.optimizer.lr
-    )
+    var_list += [{'params': models['nerf_coarse'].parameters()}]
+    if 'nerf_fine' in models:
+        var_list += [{'params': models['nerf_fine'].parameters()}]
+    optimizer = getattr(torch.optim, cfg.optimizer.type)(var_list, lr=cfg.optimizer.lr)
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lr_lambda=lambda epoch: cfg.optimizer.scheduler_gamma ** (
             epoch / cfg.optimizer.scheduler_step_size)
     )
-
     return optimizer, scheduler
 
 

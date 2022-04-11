@@ -97,12 +97,16 @@ def train(rank: int, cfg: CfgNode) -> None:
             rgb_coarse, rgb_fine = nerf.predict_radiance_and_render(rays,
                                                                     point_sampler,
                                                                     embedders,
-                                                                    models["nerf_coarse"], models["nerf_fine"],
+                                                                    models["nerf_coarse"],
+                                                                    models["nerf_fine"] if "nerf_fine" in models else None,
                                                                     target_object_embedding)
             # Compute losses
             nerf_loss_coarse = torch.nn.functional.mse_loss(rgb_coarse[..., :3], target_pixels[..., :3])
-            nerf_loss_fine = torch.nn.functional.mse_loss(rgb_fine[..., :3], target_pixels[..., :3])
-            psnr = utils.mse2psnr(nerf_loss_fine.item())
+            nerf_loss_fine = 0.0
+            psnr = utils.mse2psnr(nerf_loss_coarse.item())
+            if rgb_fine:
+                nerf_loss_fine = torch.nn.functional.mse_loss(rgb_fine[..., :3], target_pixels[..., :3])
+                psnr = utils.mse2psnr(nerf_loss_fine.item())
             shape_params, texture_params = network_arch.get_params_tensor(models["embedding"], cfg.is_distributed)
             embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(shape_params, p=2) + torch.norm(texture_params, p=2))
             loss = nerf_loss_coarse + nerf_loss_fine + embedding_regularization
@@ -116,12 +120,12 @@ def train(rank: int, cfg: CfgNode) -> None:
             i = iteration * num_batches + j
             if utils.is_main_process(cfg.is_distributed) and i > 0:
                 if i % cfg.experiment.print_every == 0:
-                    losses_dict = {"nerf_loss_coarse": nerf_loss_coarse.item(),
-                                   "nerf_loss_fine": nerf_loss_fine.item(),
-                                   "embedding_loss": embedding_regularization.item(),
-                                   "total_loss": loss.item(),
-                                   "psnr": psnr,
-                                   }
+                    losses_dict = {"nerf_loss_coarse": nerf_loss_coarse.item()}
+                    if rgb_fine:
+                        losses_dict["nerf_loss_fine"] = nerf_loss_fine.item()
+                    losses_dict["embedding_loss"] = embedding_regularization.item()
+                    losses_dict["total_loss"] = loss.item()
+                    losses_dict["psnr"] = psnr
                     log_string = utils.log_losses(writer, "train", i, time.time()-then, losses_dict, scheduler.get_last_lr()[0])
                     writer.add_images("train/target_image", train_data["color"][..., :3], i, dataformats='NHWC')
                     print(log_string)
@@ -129,11 +133,11 @@ def train(rank: int, cfg: CfgNode) -> None:
                 if (i % cfg.experiment.save_every == 0 or i == cfg.experiment.iterations - 1):
                     checkpoint_dict = {
                         "iter": iteration,
-                        "model_nerf_coarse_state_dict": models["nerf_coarse"].state_dict(),
-                        "model_nerf_fine_state_dict": models["nerf_fine"].state_dict(),
-                        "model_embedding_state_dict": models["embedding"].state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                    }
+                        "model_nerf_coarse_state_dict": models["nerf_coarse"].state_dict()}
+                    if "nerf_fine" in models:
+                        checkpoint_dict["model_nerf_fine_state_dict"] = models["nerf_fine"].state_dict()
+                    checkpoint_dict["model_embedding_state_dict"] = models["embedding"].state_dict()
+                    checkpoint_dict["optimizer_state_dict"] = optimizer.state_dict()
                     torch.save(checkpoint_dict, logdir_path / f"checkpoint{i:5d}.ckpt")
                     print("================== Saved Checkpoint =================")
 
@@ -150,7 +154,7 @@ def init_process(rank: int, fn: FunctionType, cfg: CfgNode, backend: str = "gloo
 
     """
     os.environ["MASTER_ADDR"] = "127.0.0.1"
-    os.environ["MASTER_PORT"] = "29500"
+    os.environ["MASTER_PORT"] = "29501"
     dist.init_process_group(backend, rank=rank,  world_size=cfg.gpus)
     fn(rank, cfg)
     torch.distributed.destroy_process_group()

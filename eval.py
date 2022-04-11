@@ -106,7 +106,7 @@ def validate(cfg: CfgNode,
     # Load data independently in all processes as a list of tuples
     # Required since broadcast_object_list requires that each process provides an object list of same size
     val_iterator = iter(dataloader)
-    val_data = next(islice(val_iterator, 5, None))
+    val_data = next(val_iterator)
 
     # Broadcast validation data in rank 0 to all the processes
     if cfg.is_distributed:
@@ -151,12 +151,15 @@ def validate(cfg: CfgNode,
         # Pass through NeRF
         latent_embedding, rays = (z_s, z_t), (ro, rd)
         rgb_coarse, rgb_fine = nerf.predict_radiance_and_render(
-            rays, point_sampler, embedders, models["nerf_coarse"], models["nerf_fine"], latent_embedding)
+            rays, point_sampler, embedders, models["nerf_coarse"], models["nerf_fine"] if "nerf_fine" in models else None, latent_embedding)
 
         # Compute losses
         nerf_loss_coarse = torch.nn.functional.mse_loss(rgb_coarse[..., :3], target_pixels[..., :3])
-        nerf_loss_fine = torch.nn.functional.mse_loss(rgb_fine[..., :3], target_pixels[..., :3])
-        psnr = utils.mse2psnr(nerf_loss_fine.item())
+        nerf_loss_fine = 0.0
+        psnr = utils.mse2psnr(nerf_loss_coarse.item())
+        if rgb_fine:
+            nerf_loss_fine = torch.nn.functional.mse_loss(rgb_fine[..., :3], target_pixels[..., :3])
+            psnr = utils.mse2psnr(nerf_loss_fine.item())
         embedding_regularization = cfg.experiment.regularizer_lambda * (torch.norm(z_s, p=2) + torch.norm(z_t, p=2))
         tform_cam2gt = torch.matmul(torch.inverse(val_data["pose"]), cam_pose)
         pose_error = torch.norm(utils.SE3.Log(tform_cam2gt), p=2)
@@ -169,12 +172,13 @@ def validate(cfg: CfgNode,
 
         if (val_iter != 0 and val_iter % cfg.experiment.val_print_every == 0) or val_iter == cfg.experiment.val_iterations-1:
             if utils.is_main_process(cfg.is_distributed):
-                losses_dict = {"nerf_loss_coarse": nerf_loss_coarse.item(),
-                               "nerf_loss_fine": nerf_loss_fine.item(),
-                               "embedding_loss": embedding_regularization.item(),
-                               "pose_error": pose_error,
-                               "total_loss": loss.item(),
-                               "psnr": psnr}
+                losses_dict = {"nerf_loss_coarse": nerf_loss_coarse.item()}
+                if rgb_fine:
+                    losses_dict["nerf_loss_fine"] = nerf_loss_fine.item()
+                losses_dict["embedding_loss"] = embedding_regularization.item()
+                losses_dict["pose_error"] = pose_error
+                losses_dict["total_loss"] = loss.item()
+                losses_dict["psnr"] = psnr
                 log_iter = val_iter
                 log_string = utils.log_losses(writer, "val-optim", log_iter, time.time()-val_then, losses_dict)
                 print(log_string)

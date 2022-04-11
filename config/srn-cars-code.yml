@@ -1,5 +1,5 @@
 experiment:
-    id: cars-disentanglednerf-model-exp-1
+    id: cars-codenerfmodel-coarseonly-exp-1
     logdir: /data3/tkhurana/misc/tmp/logs-srn-cars-code-train
     # logdir: /home/tkhurana/Documents/akash/tmp/logs-srn-cars-code-train
     randomseed: 55
@@ -25,14 +25,14 @@ dataset:
 
 models:
     nerf_coarse:
-      type: DisentangledNeRFModel
+      type: CodeNeRFModel
       hidden_size: 256
-    nerf_fine:
-        type: DisentangledNeRFModel
-        hidden_size: 256
+    # nerf_fine:
+    #     type: CodeNeRFModel
+    #     hidden_size: 256
     embedding:
-      shape_code_size: 128
-      texture_code_size: 128
+      shape_code_size: 256
+      texture_code_size: 256
 
 optimizer:
     type: AdamW
@@ -47,9 +47,9 @@ optimizer:
 
 nerf:
     ray_sampler:
-        num_random_rays: 6144
+        num_random_rays: 7168
     point_sampler:
-        num_coarse: 32
+        num_coarse: 128
         num_fine: 128
         near_limit: 0.8
         far_limit: 1.8
@@ -65,6 +65,6 @@ nerf:
         log_sampling_dir: True
     white_background: False
     train:
-        chunksize: 6144
+        chunksize: 7168
     validation:
         chunksize: 4096
