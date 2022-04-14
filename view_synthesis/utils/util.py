@@ -65,6 +65,7 @@ def prepare_dataloader(stage: Literal["train", "val"], cfg: CfgNode) -> torch.ut
 
     """
     is_distributed = hasattr(cfg, "is_distributed") and cfg.is_distributed
+
     dataset = getattr(datasets, cfg.dataset.type)(
         path=cfg.dataset.basedir,
         stage=stage

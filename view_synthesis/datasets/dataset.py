@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Dict
 
 from pathlib import Path
 
@@ -91,4 +91,83 @@ class SRNDataset(torch.utils.data.Dataset):
             "mask": mask_image.astype(np.float32),
             "pose": pose.astype(np.float32),
         }
+        return sample
+
+
+class CARLADataset(torch.utils.data.Dataset):
+    """
+    Dataset rendered from CARLA (GRAF: Schwarz et al. 2020)
+    """
+
+    def __init__(
+        self, path: str,
+        stage: Literal["train", "val"] = "train",
+    ):
+        """
+        Args:
+            stage: train | val
+            image_size: result image size (resizes if different)
+            world_scale: amount to scale entire world by
+        """
+
+        super(CARLADataset, self).__init__()
+        self.root_dir = Path(path)
+        self.rgb_dir = self.root_dir / "rgb"
+        self.pose_dir = self.root_dir / "poses"
+        intrinsic = np.load(self.root_dir / "intrinsics.npy")
+        self.intrinsic = np.eye(4)
+        self.intrinsic[:3, :3] = intrinsic
+        self.dataset_name = "carla-cars"
+        self.stage = stage
+        self.num_objects = 18
+
+        print(f"Loading CARLA dataset {self.root_dir} name: {self.dataset_name}-{self.stage}")
+
+        rgb_fnames = [f for f in self.rgb_dir.iterdir() if f.is_file and f.suffix in [".png", ".jpg"]]
+        pose_fnames = [f for f in self.pose_dir.iterdir() if f.is_file and f.suffix == ".npy"]
+
+        rgb_fnames = np.asarray(sorted(rgb_fnames, key=lambda x: int(x.stem)))
+        pose_fnames = np.asarray(sorted(pose_fnames, key=lambda x: x.stem.replace('_extrinsics', '')))
+
+        assert len(rgb_fnames) == len(pose_fnames), "The number of pose files do not match number of rgb images"
+
+        total_length = len(rgb_fnames)
+
+        train_size = int(total_length * 0.75)
+
+        idxs = np.random.permutation(total_length)
+        train_idxs, val_idxs = idxs[:train_size], idxs[train_size:]
+        if self.stage == "train":
+            self.rgb_fnames = rgb_fnames[train_idxs]
+            self.pose_fnames = pose_fnames[train_idxs]
+            self.rgb_frames = [imageio.imread(rgb_filename) for rgb_filename in self.rgb_fnames]
+            self.poses = [np.load(pose_filename) for pose_filename in self.pose_fnames]
+        elif self.stage == "val":
+            self.rgb_fnames = rgb_fnames[val_idxs]
+            self.pose_fnames = pose_fnames[val_idxs]
+            self.rgb_frames = [imageio.imread(rgb_filename) for rgb_filename in self.rgb_fnames]
+            self.poses = [np.load(pose_filename) for pose_filename in self.pose_fnames]
+
+        self.length = len(self.rgb_fnames)
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx) -> Dict:
+        """
+        Get Item given index
+        """
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        rgb = self.rgb_frames[idx]
+        pose = np.eye(4)
+        pose[:3, :4] = self.poses[idx]
+
+        rgb = rgb / 255.0
+
+        sample = {'color': torch.from_numpy(rgb).double(),
+                  'pose': torch.from_numpy(pose).double(),
+                  'intrinsic': torch.from_numpy(self.intrinsic).double()}
+
         return sample
