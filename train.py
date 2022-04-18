@@ -1,22 +1,30 @@
 from types import FunctionType
 import os
+import logging
 import time
 import argparse
-from torch.utils.tensorboard import SummaryWriter
 
+import hydra
+import omegaconf
+from dotenv import load_dotenv
+from omegaconf import DictConfig, OmegaConf
 import numpy as np
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from view_synthesis.cfgnode import CfgNode
 import view_synthesis.models as network_arch
 import view_synthesis.utils as utils
+from view_synthesis.utils import rank_zero_only
 import view_synthesis.nerf as nerf
 from eval import validate
 
+load_dotenv()
 
-def train(rank: int, cfg: CfgNode) -> None:
+logger = logging.getLogger(__name__)
+
+
+def train(cfg: DictConfig) -> None:
     """
     Main training loop for the model
 
@@ -26,18 +34,17 @@ def train(rank: int, cfg: CfgNode) -> None:
 
     """
     # Seed experiment for repeatability (Each process should sample different rays)
-    seed = (rank + 1) + cfg.experiment.randomseed
+
+    device = torch.device('cuda', cfg.gpu)
+    torch.backends.cudnn.benchmark = cfg.cudnn_benchmark    # Improves training speed.
+    torch.backends.cuda.matmul.allow_tf32 = False  # Allow PyTorch to internally use tf32 for matmul
+    torch.backends.cudnn.allow_tf32 = False  # Allow PyTorch to internally use tf32 for convolutions
+
+    seed = cfg.experiment.randomseed * cfg.world_size + cfg.rank
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    # Set device and logdir_path
-    logdir_path, writer = None, None
-    if utils.is_main_process(cfg.is_distributed):
-        logdir_path = utils.prepare_experiment(cfg)
-        writer = SummaryWriter(logdir_path)
-
-    device = torch.device('cuda', rank)
-    torch.cuda.set_device(device)
+    writer = rank_zero_only(utils.prepare_experiment(cfg))
 
     # Load Data
     train_dataloader, train_dataset = utils.prepare_dataloader("train", cfg)
@@ -146,62 +153,74 @@ def train(rank: int, cfg: CfgNode) -> None:
                 validate(cfg, i, val_dataloader, models, [ray_sampler, point_sampler], embedders, writer, device)
 
 
-def init_process(rank: int, fn: FunctionType, cfg: CfgNode, backend: str = "gloo"):
+def init_distributed_mode(rank, args):
+    if "WORLD_SIZE" in os.environ:
+        args.world_size = int(os.environ["WORLD_SIZE"])
+    else:
+        args.world_size = args.gpus
+    args.rank = rank
+    args.gpu = rank
+
+    if 'RANK' in os.environ:
+        args.rank = int(os.environ["RANK"])
+        args.gpu = int(os.environ['LOCAL_RANK'])
+
+    if args.world_size == 1:
+        return
+
+    if 'MASTER_ADDR' in os.environ:
+        args.dist_url = 'tcp://{}:{}'.format(os.environ['MASTER_ADDR'], os.environ['MASTER_PORT'])
+
+    print(f'gpu={args.gpu}, rank={args.rank}, world_size={args.world_size}')
+    args.distributed = True
+    torch.cuda.set_device(args.gpu)
+    with omegaconf.open_dict(args):
+        args.dist_backend = 'nccl'
+    print('| distributed init (rank {}): {}'.format(args.rank, args.dist_url), flush=True)
+
+    torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
+                                         world_size=args.world_size, rank=args.rank)
+    torch.distributed.barrier()
+
+
+def subprocess_fn(rank: int, args: DictConfig):
     """TODO: Docstring for init_process.
 
     :function: TODO
     :returns: TODO
 
     """
-    os.environ["MASTER_ADDR"] = "127.0.0.1"
-    os.environ["MASTER_PORT"] = "29501"
-    dist.init_process_group(backend, rank=rank,  world_size=cfg.gpus)
-    fn(rank, cfg)
-    torch.distributed.destroy_process_group()
+    init_distributed_mode(rank, args)
+    train(args)
 
 
-def main(cfg: CfgNode):
+def setup_training_kwargs(cfg: DictConfig):
+    """
+    """
+    with omegaconf.open_dict(cfg):
+        cfg.rank = 0
+        cfg.gpu = 0
+        cfg.gpus = torch.cuda.device_count() if cfg.gpus is None else cfg.gpus
+        cfg.distributed = True if cfg.distributed and cfg.gpus > 1 else False
+        cfg.world_size = 1
+
+
+@hydra.main(config_path="conf", config_name="config")
+def main(cfg: DictConfig):
     """ Main function setting up the training loop
 
     :function: TODO
     :returns: TODO
 
     """
-    # # (Optional:) enable this to track autograd issues when debugging
-    # torch.autograd.set_detect_anomaly(True)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    _, device_ids = utils.prepare_device(cfg.gpus, cfg.is_distributed)
-
-    if len(device_ids) > 1 and configargs.is_distributed:
-        # TODO: Setup DataDistributedParallel
-        print(f"Using {len(device_ids)} GPUs for training")
-        mp.spawn(init_process, args=(train, cfg, "nccl"),
-                 nprocs=cfg.gpus, join=True)
+    setup_training_kwargs(cfg)
+    logger.info(f"Working dir: {os.getcwd()}")
+    print('Launching processes...')
+    if cfg.distributed:
+        mp.spawn(subprocess_fn, args=(cfg,), nprocs=cfg.gpus)
     else:
-        train(0, cfg)
+        subprocess_fn(rank=0, args=cfg)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-c", "--config", type=str, required=True, help="Path to (.yml) config file."
-    )
-    parser.add_argument(
-        "--load-checkpoint",
-        type=str,
-        default="",
-        help="Path to load saved checkpoint from.",
-    )
-    parser.add_argument('-g', '--gpus', default=1, type=int,
-                        help='Number of gpus per node')
-    parser.add_argument("--distributed", action='store_true', dest="is_distributed",
-                        help="Run the models in DataDistributedParallel")
-    configargs = parser.parse_args()
-
-    # Read config file.
-    cfg = CfgNode(vars(configargs), new_allowed=True)
-    cfg.merge_from_file(configargs.config)
-
-    main(cfg)
+    main()

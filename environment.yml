@@ -1,15 +1,19 @@
 name: code-nerf
 channels:
-  - pytorch-lts
+  - pytorch
   - nvidia
   - conda-forge
   - defaults
 dependencies:
-  - python=3.8
-  - pytorch=1.8.2
+  - python=3.9
+  - pytorch=1.11.0
   - torchvision
-  - cudatoolkit=11.1
+  - cudatoolkit=11.3
   - imageio
   - tensorboard
   - matplotlib
   - pyyaml
+  - pip
+  - pip:
+      - hydra-core
+

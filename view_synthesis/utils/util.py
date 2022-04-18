@@ -1,8 +1,11 @@
-from typing import Tuple, List, Optional, OrderedDict, Literal, Union
-
+from typing import Tuple, List, Optional, OrderedDict, Literal, Union, Callable, Any, Sequence
+from functools import wraps
 import math
 import torch
 from pathlib import Path
+import rich.syntax
+import rich.tree
+from omegaconf import DictConfig, OmegaConf
 
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
@@ -41,7 +44,19 @@ def is_main_process(is_distributed) -> bool:
     return (dist.get_rank() == 0) if is_distributed else True
 
 
-def prepare_experiment(cfg: CfgNode):
+def rank_zero_only(fn: Callable) -> Callable:
+    """Function that can be used as a decorator to enable a function/method being called only on rank 0."""
+
+    @wraps(fn)
+    def wrapped_fn(*args: Any, **kwargs: Any) -> Optional[Any]:
+        if dist.is_initialized() and dist.get_rank() == 0:
+            return fn(*args, **kwargs)
+        return None
+
+    return wrapped_fn
+
+
+def prepare_experiment(cfg: DictConfig):
     """TODO: Docstring for prepare_experiment.
 
     :function: TODO
@@ -50,10 +65,59 @@ def prepare_experiment(cfg: CfgNode):
     """
     logdir_path = Path(cfg.experiment.logdir) / cfg.experiment.id
     logdir_path.mkdir(parents=True, exist_ok=True)
-    with open(Path(logdir_path) / "config.yml", "w") as f:
-        f.write(cfg.dump())
 
-    return logdir_path
+    print_config(cfg, resolve=True)
+    writer = SummaryWriter(logdir_path)
+    return writer
+
+
+@rank_zero_only
+def print_config(
+    config: DictConfig,
+    print_order: Sequence[str] = (
+        "datamodule",
+        "model",
+        "callbacks",
+        "logger",
+        "trainer",
+    ),
+    resolve: bool = True,
+) -> None:
+    """Prints content of DictConfig using Rich library and its tree structure.
+
+    Args:
+        config (DictConfig): Configuration composed by Hydra.
+        print_order (Sequence[str], optional): Determines in what order config components are printed.
+        resolve (bool, optional): Whether to resolve reference fields of DictConfig.
+    """
+
+    style = "dim"
+    tree = rich.tree.Tree("CONFIG", style=style, guide_style=style)
+
+    quee = []
+
+    for field in print_order:
+        quee.append(field) if field in config else log.info(f"Field '{field}' not found in config")
+
+    for field in config:
+        if field not in quee:
+            quee.append(field)
+
+    for field in quee:
+        branch = tree.add(field, style=style, guide_style=style)
+
+        config_group = config[field]
+        if isinstance(config_group, DictConfig):
+            branch_content = OmegaConf.to_yaml(config_group, resolve=resolve)
+        else:
+            branch_content = str(config_group)
+
+        branch.add(rich.syntax.Syntax(branch_content, "yaml"))
+
+    rich.print(tree)
+
+    with open("config_tree.log", "w") as file:
+        rich.print(tree, file=file)
 
 
 def prepare_dataloader(stage: Literal["train", "val"], cfg: CfgNode) -> torch.utils.data.DataLoader:
