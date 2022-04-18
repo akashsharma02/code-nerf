@@ -164,7 +164,7 @@ def prepare_models(cfg: CfgNode,
     Args:
         rank: Process rank. 0 == main process
     Return:
-        models: Dict containing embedding model and NeRF model
+        models: Dict containing code model and NeRF model
         latent_codes: List containing latent codes for
                       each object style in a semantic category defined by the dataset
 
@@ -174,16 +174,16 @@ def prepare_models(cfg: CfgNode,
         rank = dist.get_rank()
 
     models = OrderedDict()
-    models['embedding'] = network_arch.ShapeTextureEmbedding(
-        num_embeddings=num_objects,
-        shape_code_size=cfg.models.embedding.shape_code_size,
-        texture_code_size=cfg.models.embedding.texture_code_size,
+    models['code'] = network_arch.ShapeTextureCode(
+        num_codes=num_objects,
+        shape_code_size=cfg.models.code.shape_code_size,
+        texture_code_size=cfg.models.code.texture_code_size,
     ).to(rank)
 
     models['nerf_coarse'] = getattr(network_arch, cfg.models.nerf_coarse.type)(
         hidden_size=cfg.models.nerf_coarse.hidden_size,
-        shape_code_size=cfg.models.embedding.shape_code_size,
-        texture_code_size=cfg.models.embedding.texture_code_size,
+        shape_code_size=cfg.models.code.shape_code_size,
+        texture_code_size=cfg.models.code.texture_code_size,
         num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
         include_input_xyz=cfg.nerf.embedder.include_input_xyz,
         num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
@@ -192,8 +192,8 @@ def prepare_models(cfg: CfgNode,
     if hasattr(cfg.models, "nerf_fine"):
         models['nerf_fine'] = getattr(network_arch, cfg.models.nerf_fine.type)(
             hidden_size=cfg.models.nerf_fine.hidden_size,
-            shape_code_size=cfg.models.embedding.shape_code_size,
-            texture_code_size=cfg.models.embedding.texture_code_size,
+            shape_code_size=cfg.models.code.shape_code_size,
+            texture_code_size=cfg.models.code.texture_code_size,
             num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
             include_input_xyz=cfg.nerf.embedder.include_input_xyz,
             num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
@@ -201,7 +201,7 @@ def prepare_models(cfg: CfgNode,
         ).to(rank)
 
     if hasattr(cfg, "is_distributed") and cfg.is_distributed:
-        models["embedding"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
+        models["code"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
         models["nerf_coarse"] = ddp(models['nerf_coarse'], device_ids=[rank], output_device=rank)
         if hasattr(cfg.models, "nerf_fine"):
             models["nerf_fine"] = ddp(models['nerf_fine'], device_ids=[rank], output_device=rank)
@@ -220,7 +220,7 @@ def prepare_optimizer(cfg: CfgNode,
     Return: TODO
 
     """
-    var_list = [{'params': models['embedding'].parameters(), 'lr': cfg.optimizer.embedding_lr}]
+    var_list = [{'params': models['code'].parameters(), 'lr': cfg.optimizer.embedding_lr}]
 
     var_list += [{'params': models['nerf_coarse'].parameters()}]
     if 'nerf_fine' in models:

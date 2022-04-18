@@ -1,0 +1,27 @@
+name: code_nerf
+
+nerf_coarse:
+  _target_: view_synthesis.models.CodeNeRFModel
+  hidden_size: 256
+  shape_code_size: 256
+  texture_code_size: 256
+  num_encoding_fn_xyz: 10
+  num_encoding_fn_dir: 4
+  include_input_xyz: True
+  include_input_dir: True
+
+nerf_fine:
+  _target_: view_synthesis.models.CodeNeRFModel
+  hidden_size: 256
+  shape_code_size: 256
+  texture_code_size: 256
+  num_encoding_fn_xyz: 10
+  num_encoding_fn_dir: 4
+  include_input_xyz: True
+  include_input_dir: True
+
+embedding:
+  _target_: view_synthesis.models.ShapeTextureEmbedding
+  num_embeddings: ???
+  shape_code_size: 256
+  texture_code_size: 256
