@@ -104,7 +104,7 @@ def train(rank: int, cfg: CfgNode) -> None:
             nerf_loss_coarse = torch.nn.functional.mse_loss(rgb_coarse[..., :3], target_pixels[..., :3])
             nerf_loss_fine = 0.0
             psnr = utils.mse2psnr(nerf_loss_coarse.item())
-            if rgb_fine:
+            if rgb_fine is not None:
                 nerf_loss_fine = torch.nn.functional.mse_loss(rgb_fine[..., :3], target_pixels[..., :3])
                 psnr = utils.mse2psnr(nerf_loss_fine.item())
             shape_params, texture_params = network_arch.get_params_tensor(models["embedding"], cfg.is_distributed)
@@ -121,7 +121,7 @@ def train(rank: int, cfg: CfgNode) -> None:
             if utils.is_main_process(cfg.is_distributed) and i > 0:
                 if i % cfg.experiment.print_every == 0:
                     losses_dict = {"nerf_loss_coarse": nerf_loss_coarse.item()}
-                    if rgb_fine:
+                    if rgb_fine is not None:
                         losses_dict["nerf_loss_fine"] = nerf_loss_fine.item()
                     losses_dict["embedding_loss"] = embedding_regularization.item()
                     losses_dict["total_loss"] = loss.item()

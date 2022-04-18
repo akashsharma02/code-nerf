@@ -1,0 +1,66 @@
+experiment:
+    id: cars-code-nerf-val-exp5
+    logdir: /home/akashsharma/tmp/logs-srn-cars-code-3080-val
+    randomseed: 42
+    iterations: 100
+    val_iterations: 500
+    validate_every: 50
+    save_every: 5000
+    print_every: 100
+    val_print_every: 5
+    regularizer_lambda: 1.0e-6
+
+dataset:
+    type: SRNDataset
+    basedir: /home/akashsharma/Documents/datasets/srn/srn_cars/
+    image_size: 128
+    world_scale: 1.0
+    train_batch_size: 1
+    val_batch_size: 1
+    near: 0.8
+    far: 1.8
+
+models:
+    nerf_coarse:
+        type: CodeNeRFModel
+        hidden_size: 256
+    nerf_fine:
+        type: CodeNeRFModel
+        hidden_size: 256
+    embedding:
+      shape_code_size: 256
+      texture_code_size: 256
+
+optimizer:
+    type: AdamW
+    lr: 1.0E-4
+    embedding_lr: 1.0E-3
+    val_type: AdamW
+    val_lr: 1.0E-2
+    angle_lr: 5.0E-2
+    radius_lr: 1.0E-1
+    scheduler_gamma: 0.1 # No schedule
+    scheduler_step_size: 5000000
+
+nerf:
+    ray_sampler:
+        num_random_rays: 2048
+    point_sampler:
+        num_coarse: 64
+        num_fine: 64
+        near_limit: 0.8
+        far_limit: 1.8
+        spacing_mode: "lindepth"
+        perturb: True
+    embedder:
+        num_encoding_fn_xyz: 10
+        include_input_xyz: True
+        log_sampling_xyz: True
+        use_viewdirs: True
+        num_encoding_fn_dir: 4
+        include_input_dir: True
+        log_sampling_dir: True
+    train:
+        chunksize: 1024
+    validation:
+        chunksize: 2048

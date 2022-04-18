@@ -1,0 +1,9 @@
+#
+name: srn_chairs
+basedir: /data3/tkhurana/datasets/srn/srn_chairs
+image_size: 128
+world_scale: 1.0
+train_batch_size: 4
+val_batch_size: 1
+near: 0.8
+far: 1.8

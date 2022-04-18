@@ -1,0 +1,17 @@
+defaults:
+  - dataset: srn_cars
+  - model: code_nerf
+
+distributed: True
+load_checkpoint: ~
+gpus: ~
+dist_url: "env://"
+cudnn_benchmark: True
+
+
+experiment:
+  randomseed: 1
+  logdir: ${oc.env:LOG_DIR}
+  id: "hydra-test"
+
+
