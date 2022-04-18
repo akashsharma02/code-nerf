@@ -1,17 +1,21 @@
 defaults:
-  - dataset: srn_cars
-  - model: code_nerf
+  - datamodule: srn_cars
+  - model: generative_nerf
+  - optim: adamw
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
 
 distributed: True
 load_checkpoint: ~
 gpus: ~
 dist_url: "env://"
 cudnn_benchmark: True
+data_dir: ${oc.env:DATA_DIR}
 
 
 experiment:
   randomseed: 1
   logdir: ${oc.env:LOG_DIR}
   id: "hydra-test"
-
-
+  encoder_lr: 1e-4
+  decoder_lr: 1e-4

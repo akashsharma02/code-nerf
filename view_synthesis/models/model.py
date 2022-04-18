@@ -1,4 +1,6 @@
-from typing import NamedTuple
+from typing import NamedTuple, Literal, Tuple, Union
+from omegaconf import DictConfig
+import numpy as np
 import torch
 import torchvision
 import torch.nn as nn
@@ -9,90 +11,14 @@ class Rays(NamedTuple):
     directions: torch.Tensor
 
 
-class FlexibleNeRFModel(nn.Module):
-    def __init__(
-        self,
-        num_layers=4,
-        hidden_size=128,
-        skip_connect_ids=[4],
-        num_encoding_fn_xyz=6,
-        num_encoding_fn_dir=4,
-        include_input_xyz=True,
-        include_input_dir=True,
-        use_viewdirs=True,
-    ):
-        super(FlexibleNeRFModel, self).__init__()
-
-        self.num_layers = num_layers
-        self.hidden_size = hidden_size
-        self.skip_connect_ids = skip_connect_ids
-        include_input_xyz = 3 if include_input_xyz else 0
-        include_input_dir = 3 if include_input_dir else 0
-        self.use_viewdirs = use_viewdirs
-
-        self.dim_xyz = include_input_xyz + 2 * 3 * num_encoding_fn_xyz
-        self.dim_dir = 0
-        if use_viewdirs:
-            self.dim_dir = include_input_dir + 2 * 3 * num_encoding_fn_dir
-
-        self.layer1 = nn.Linear(self.dim_xyz, hidden_size)
-        self.layers_xyz = nn.ModuleList()
-        for i in range(self.num_layers - 1):
-            if i in self.skip_connect_ids:
-                self.layers_xyz.append(nn.Linear(self.dim_xyz + hidden_size, hidden_size))
-            else:
-                self.layers_xyz.append(nn.Linear(hidden_size, hidden_size))
-
-        if self.use_viewdirs:
-            self.fc_feat = nn.Linear(hidden_size, hidden_size)
-            self.layers_dir = nn.ModuleList()
-            self.layers_dir.append(nn.Linear(self.dim_dir + hidden_size, hidden_size // 2))
-
-            self.fc_alpha = nn.Linear(hidden_size, 1)
-            self.fc_rgb = nn.Linear(hidden_size // 2, 3)
-        else:
-            self.fc_out = nn.Linear(hidden_size, 4)
-
-        self.relu = nn.functional.relu
-
-    def forward(self, x: torch.Tensor):
-        """ Forward function for NeRF Model
-
-        :function:
-            x: torch.Tensor [sample_size: dim_xyz + dim_dir]
-        :returns: TODO
-
-        """
-        xyz = x[..., : self.dim_xyz]
-        out = self.relu(self.layer1(xyz))
-        for i, layer_xyz in enumerate(self.layers_xyz):
-            if i in self.skip_connect_ids:
-                out = torch.cat((out, xyz), dim=-1)
-            out = self.relu(layer_xyz(out))
-
-        if self.use_viewdirs:
-            view = x[..., self.dim_xyz:]
-            feat = self.relu(self.fc_feat(out))
-            sigma = self.fc_alpha(feat)
-            out = torch.cat((feat, view), dim=-1)
-            for layer_dir in self.layers_dir:
-                out = self.relu(layer_dir(out))
-            rgb = self.fc_rgb(out)
-            return torch.cat((rgb, sigma), dim=-1)
-        else:
-            return self.fc_out(out)
-
-
 class ShapeTexturecode(nn.Module):
     def __init__(
         self,
         num_codes,
         code_size=128,
-        code_size=128,
     ):
         super(ShapeTexturecode, self).__init__()
         self.num_codes = num_codes
-        self.code_size = shape_code_size
         self.code_size = code_size
 
         self.shape_code = nn.code(self.num_codes, self.code_size)
@@ -110,7 +36,7 @@ class ShapeTexturecode(nn.Module):
         return z_s, z_t
 
 
-class PositionalEncoder(nn.Module):
+class PositionalEncoder(object):
     """Positionally encode the input vector through fourier basis with given frequency bands"""
 
     def __init__(self, num_freq: int, log_sampling: bool, include_input: bool) -> None:
@@ -144,55 +70,198 @@ class PositionalEncoder(nn.Module):
             return torch.cat(encoding, dim=-1)
 
 
+class PointSampler(object):
+
+    """Sample 3D points along the given rays"""
+
+    def __init__(self,
+                 num_samples,
+                 near: float,
+                 far: float,
+                 spacing_mode: Literal["lindisp", "lindepth"],
+                 perturb: bool):
+
+        assert near >= 0 and far > near, "Near and far ranges should be positive values, and far > near"
+        assert num_samples > 0, "Number of samples must be greater than 0"
+
+        self.num_samples = num_samples
+        self.near = near
+        self.far = far
+        self.spacing_mode = spacing_mode
+        self.perturb = perturb
+
+        self.t_vals = torch.linspace(0.0, 1.0, self.num_samples)
+        if self.spacing_mode == "lindisp":
+            self.z_vals = self.near * (1.0 - self.t_vals) + self.far * self.t_vals
+        else:
+            self.z_vals = 1.0 / (1.0 / self.near * (1.0 - self.t_vals) + 1.0 / self.far * self.t_vals)
+
+        self.mids = 0.5 * (self.z_vals[..., 1:] + self.z_vals[..., :-1])
+        self.upper = torch.cat((self.mids, self.z_vals[..., -1:]), dim=-1)
+        self.lower = torch.cat((self.z_vals[..., :1], self.mids), dim=-1)
+
+    def sample_uniform(self, rays: Rays) -> Tuple[torch.Tensor, torch.Tensor]:
+        """ Uniform sample points according to spacing mode along the ray
+
+        :function:
+            ro: [num_random_rays, 3] ray_origins
+            rd: [num_random_rays, 3] ray_directions
+        :returns:
+            pts: [num_random_rays*num_samples, 3] pts alongs the ray
+            z_vals: [num_random_rays, num_samples, 3] z_vals along the ray
+
+        """
+        num_random_rays = rays.origins.shape[-2]
+        if self.perturb:
+            upper = self.upper.expand(num_random_rays, self.num_samples)
+            lower = self.lower.expand(num_random_rays, self.num_samples)
+            t_rand = torch.rand_like(upper, dtype=rays.origins.dtype)
+            z_vals = lower + (upper - lower) * t_rand
+        else:
+            z_vals = self.z_vals.expand(num_random_rays, self.num_samples)
+        z_vals = z_vals.to(rays.origins.device)
+        assert z_vals.shape == torch.Size([num_random_rays, self.num_samples]), "Incorrect shape of depth samples z_vals"
+        pts = rays.origins[..., None, :] + rays.directions[..., None, :] * z_vals[..., :, None]
+        return pts, z_vals
+
+
+class RaySampler(object):
+
+    """RaySampler samples rays for a given image size and intrinsics """
+
+    def __init__(self, num_samples: int, height: int, width: int, intrinsics: Union[torch.Tensor, np.ndarray]):
+        """ Prepares a ray bundle for a given image size and intrinsics
+
+        :Function: intrinsics: torch.Tensor 4x4
+
+        """
+        assert height > 0 and width > 0, "Height and width must be positive integers"
+        assert num_samples > 0 and num_samples <= height * width, "Sample size must be a positive number less than height * width"
+
+        self.height = height
+        self.width = width
+        self.num_samples = num_samples
+
+        if isinstance(intrinsics, np.ndarray):
+            intrinsics = torch.from_numpy(intrinsics)
+        assert intrinsics.shape == torch.Size(
+            [1, 4, 4]), "Incorrect intrinsics shape"
+        self.intrinsics = intrinsics
+        dtype = self.intrinsics.dtype
+        device = self.intrinsics.device
+        self.focal_length = self.intrinsics[..., 0, 0]
+        self.cx = self.intrinsics[..., 0, 2]
+        self.cy = self.intrinsics[..., 1, 2]
+
+        ii, jj = torch.meshgrid(
+            torch.arange(
+                width, dtype=dtype, device=device
+            ),
+            torch.arange(
+                height, dtype=dtype, device=device
+            ),
+            indexing='xy'
+        )
+        self.directions = torch.stack(
+            [
+                (ii - self.cx) / self.focal_length,
+                -(jj - self.cy) / self.focal_length,
+                -torch.ones_like(ii),
+            ],
+            dim=-1,
+        )
+
+    def sample(self, world_T_camera: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+        """
+        Rotate the bundle of rays given the camera pose and return a random subset of rays
+
+        :function:
+            world_T_camera: [batch, 4, 4] torch.Tensor camera pose (SE3)
+        :returns:
+            ray origins: torch.Tensor [batch_size*num_samples, 3]
+            ray directions: torch.Tensor [batch_size*num_samples, 3]
+            select_inds: np.ndarray [batch_size*num_samples]
+
+        """
+        batch_size = world_T_camera.shape[0]
+
+        rays = self.get_bundle(world_T_camera)
+        ray_origins, ray_directions = rays.origins.flatten(1, 2), rays.directions.flatten(1, 2)
+
+        select_inds = []
+        pixel_range = np.arange(0, ray_origins.shape[-2])
+        for _ in range(batch_size):
+            select_inds.append(np.random.permutation(pixel_range)[:self.num_samples])
+        select_inds = np.asarray(select_inds)
+
+        ray_origins = [ray_origins[i, select_inds[i], :] for i in range(batch_size)]
+        ray_directions = [ray_directions[i, select_inds[i], :] for i in range(batch_size)]
+        ray_origins = torch.cat(ray_origins, dim=0)
+        ray_directions = torch.cat(ray_directions, dim=0)
+
+        return Rays(ray_origins, ray_directions), select_inds
+
+    def get_bundle(self, world_T_camera: torch.Tensor):
+        """
+            Rotate the bundle of rays given the camera pose
+
+        :function:
+            world_T_camera: 4x4 torch.Tensor camera pose (SE3)
+        :returns:
+            ray origins: torch.Tensor [batch, H, W, 3]
+            ray directions: torch.Tensor [batch, H, W, 3]
+
+        """
+        directions = self.directions[..., None].to(world_T_camera.device)
+        ray_directions = torch.einsum('hwij, bji->bhwj', directions, world_T_camera[..., :3, :3]).contiguous()
+        ray_origins = world_T_camera[..., :3, -1][:, None, None, :].expand(ray_directions.shape)
+        return Rays(ray_origins, ray_directions)
+
+
 class NeRFDecoderNet(nn.Module):
     def __init__(
         self,
-            hidden_size: int = 128,
-            code_size: int = 128,
-            num_encoding_xyz: int = 6,
-            num_encoding_dir: int = 4,
-            log_sampling: bool = True,
-            include_input: bool = True,
+        hidden_size: int = 128,
+        code_size: int = 128,
+        num_encoding_xyz: int = 6,
+        log_sampling: bool = True,
+        include_input: bool = True,
     ):
         super(NeRFDecoderNet, self).__init__()
         self.hidden_size = hidden_size
         self.code_size = code_size
 
         include_input_xyz = 3 if include_input else 0
-        include_input_dir = 3 if include_input else 0
         self.dim_xyz = include_input_xyz + 2 * 3 * num_encoding_xyz
-        self.dim_dir = include_input_dir + 2 * 3 * num_encoding_dir
         self.xyz_encoder = PositionalEncoder(num_encoding_xyz, log_sampling, True)
-        self.view_encoder = PositionalEncoder(num_encoding_dir, log_sampling, True)
 
         self.layer_xyz1 = nn.Linear(self.dim_xyz, self.hidden_size)
         self.layer_xyz2 = nn.Linear(self.hidden_size + self.code_size, self.hidden_size)
-        self.fc_out = nn.Linear(self.hidden_size + self.code_size, self.shape_code_size + 1)
+        self.fc_out = nn.Linear(self.hidden_size + self.code_size, self.code_size + 1)
 
-        self.shape_code_layer1 = nn.Linear(self.code_size, self.shape_code_size)
-        self.shape_code_layer2 = nn.Linear(self.code_size, self.shape_code_size)
+        self.shape_code_layer1 = nn.Linear(self.code_size, self.code_size)
+        self.shape_code_layer2 = nn.Linear(self.code_size, self.code_size)
         self.texture_code_layer1 = nn.Linear(self.code_size, self.code_size)
         self.texture_code_layer2 = nn.Linear(self.code_size, self.code_size)
 
-        self.layer_dir1 = nn.Linear(self.dim_dir + self.code_size, self.hidden_size)
+        self.layer_dir1 = nn.Linear(self.code_size, self.hidden_size)
         self.layer_dir2 = nn.Linear(self.hidden_size + self.code_size, self.hidden_size)
 
         self.fc_rgb = nn.Linear(self.hidden_size + self.code_size, 3)
 
         self.activation = nn.functional.relu
 
-    def forward(self, z_s: torch.Tensor, z_t: torch.Tensor, xyz: torch.Tensor, viewdirs: torch.Tensor):
+    def forward(self, z_s: torch.Tensor, z_t: torch.Tensor, xyz: torch.Tensor):
         """ Forward function for NeRF Model
 
         :function:
-            z_s: Shape Latent code [sample_size x code_size]
-            z_t: Texture Latent code [sample_size x code_size]
-            x: torch.Tensor [sample_size: dim_xyz + dim_dir]
+            z_s: Shape Latent code [num_samples x code_size]
+            z_t: Texture Latent code [num_samples x code_size]
+            x: torch.Tensor [num_samples: dim_xyz + dim_dir]
         :returns: TODO
 
         """
-        xyz = self.xyz_encoder(xyz)
-        viewdirs = self.view_encoder(viewdirs)
+        xyz = self.xyz_encoder.forward(xyz)
 
         z_s_out = self.activation(self.shape_code_layer1(z_s))
         z_s_out2 = self.activation(self.shape_code_layer2(z_s))
@@ -209,14 +278,13 @@ class NeRFDecoderNet(nn.Module):
 
         sigma, feat = feat[..., :1], feat[..., 1:]
 
-        view_in = torch.cat((feat, viewdirs), dim=-1)
-        view_out = self.activation(self.layer_dir1(view_in))
+        view_out = self.activation(self.layer_dir1(feat))
         view_out = torch.cat((view_out, z_t_out), dim=-1)
         view_out = self.activation(self.layer_dir2(view_out))
         view_out = torch.cat((view_out, z_t_out2), dim=-1)
         rgb = self.fc_rgb(view_out)
 
-        return torch.cat((rgb, sigma), dim=-1)
+        return rgb, sigma
 
 
 class Sine(nn.Module):
@@ -232,7 +300,6 @@ class DisentangledNeRFModel(nn.Module):
     def __init__(
         self,
         hidden_size=128,
-        code_size=128,
         code_size=128,
         num_encoding_fn_xyz=6,
         num_encoding_fn_dir=4,
@@ -268,9 +335,9 @@ class DisentangledNeRFModel(nn.Module):
         """ Forward function for NeRF Model
 
         :function:
-            z_s: Shape Latent code [sample_size x code_size]
-            z_t: Texture Latent code [sample_size x code_size]
-            x: torch.Tensor [sample_size: dim_xyz + dim_dir]
+            z_s: Shape Latent code [num_samples x code_size]
+            z_t: Texture Latent code [num_samples x code_size]
+            x: torch.Tensor [num_samples: dim_xyz + dim_dir]
         :returns: TODO
 
         """
@@ -316,18 +383,9 @@ class ImageEncoder(nn.Module):
         """
         super().__init__()
         self.model = getattr(torchvision.models, backbone)(pretrained=pretrained)
-        self.model.fc = nn.Sequential()
         self.latent_size = latent_size
         self.fc_shape = nn.Linear(512, latent_size)
         self.fc_texture = nn.Linear(512, latent_size)
-
-    # def index(self, uv, cam_z=None, image_size=(), z_bounds=()):
-    #     """
-    #     Params ignored (compatibility)
-    #     :param uv (B, N, 2) only used for shape
-    #     :return latent vector (B, L, N)
-    #     """
-    #     return self.latent.unsqueeze(-1).expand(-1, -1, uv.shape[1])
 
     def forward(self, x):
         """
@@ -335,7 +393,6 @@ class ImageEncoder(nn.Module):
         :param x image (B, C, H, W)
         :return latent (B, latent_size)
         """
-        x = x.to(device=self.latent.device)
         x = self.model.conv1(x)
         x = self.model.bn1(x)
         x = self.model.relu(x)
@@ -357,10 +414,11 @@ class ImageEncoder(nn.Module):
 
 class GenerativeNeRF(nn.Module):
     def __init__(self,
+                 point_sampler: PointSampler,
+                 ray_sampler: RaySampler,
                  code_size: int = 128,
                  decoder_hidden_size: int = 128,
                  num_encoding_xyz=6,
-                 num_encoding_dir=4,
                  log_sampling=True,
                  include_input=True,
                  ) -> None:
@@ -371,16 +429,17 @@ class GenerativeNeRF(nn.Module):
             pretrained=True,
             latent_size=code_size
         )
+        self.point_sampler = point_sampler
+        self.ray_sampler = ray_sampler
         self.decoder = NeRFDecoderNet(
             decoder_hidden_size,
             code_size,
             num_encoding_xyz,
-            num_encoding_dir,
             log_sampling,
             include_input
         )
 
-    def forward(self, x: torch.Tensor, pts: torch.Tensor, viewdirs: torch.Tensor):
+    def forward(self, x: torch.Tensor, world_T_camera: torch.Tensor):
         """
         Forward function for GenerativeNeRF model
         Args:
@@ -389,5 +448,10 @@ class GenerativeNeRF(nn.Module):
             viewdirs: torch.Tensor [batch_size, 3]
         """
         shape_code, texture_code = self.encoder(x)
-        rgb, sigma = self.decoder(shape_code, texture_code, pts, viewdirs)
+        rays, select_inds = self.ray_sampler.sample(world_T_camera)
+        pts, z_vals = self.point_sampler.sample_uniform(rays)
+        num_rays, num_points = rays.origins.shape[0], pts.shape[1]
+        shape_code = shape_code[:, None, :].expand(num_rays, num_points, -1)
+        texture_code = texture_code[:, None, :].expand(num_rays, num_points, -1)
+        rgb, sigma = self.decoder(shape_code, texture_code, pts)
         return rgb, sigma

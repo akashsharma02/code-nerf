@@ -1,0 +1,21 @@
+_target_: view_synthesis.models.GenerativeNeRF
+code_size: 256
+decoder_hidden_size: 256
+num_encoding_xyz: 10
+log_sampling: True
+include_input: True
+point_sampler:
+  _target_: view_synthesis.models.PointSampler
+  num_samples: 128
+  near: 0.8
+  far: 1.8
+  spacing_mode: "lindisp"
+  perturb: True
+ray_sampler:
+  _target_: view_synthesis.models.RaySampler
+  num_samples: 1024
+  height: ~
+  width: ~
+  intrinsics: ~
+
+

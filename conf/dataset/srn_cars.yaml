@@ -1,7 +1,0 @@
-name: srn_cars
-basedir: /home/akashsharma/Documents/datasets/srn/srn_cars/
-image_size: 128
-world_scale: 1.0
-train_batch_size: 1
-val_batch_size: 1
-near: 0.8

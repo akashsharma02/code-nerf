@@ -1,10 +1,12 @@
-from typing import Literal, Dict
+from typing import Literal, Dict, Optional, Callable
 
 from pathlib import Path
 
 import numpy as np
 import imageio
 import torch
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
 
 
 class SRNDataset(torch.utils.data.Dataset):
@@ -13,14 +15,16 @@ class SRNDataset(torch.utils.data.Dataset):
     """
 
     def __init__(
-        self, path: str,
-        stage: Literal["train", "val", "test"] = "train",
+        self,
+        path: str,
+        stage: Literal["train", "val"] = "train",
+        transform: Optional[Callable] = None
     ):
         """
         Args:
-            stage: train | val | test
-            image_size: result image size (resizes if different)
-            world_scale: amount to scale entire world by
+           path: Root directory for the dataset
+           stage: train | val | test
+           transform: torchvision.Transforms
         """
         super(SRNDataset, self).__init__()
         self.base_path = Path(path)
@@ -51,6 +55,7 @@ class SRNDataset(torch.utils.data.Dataset):
 
         assert len(self.rgb_all_filenames) == len(self.pose_all_filenames)
         self.num_views = len(self.rgb_all_filenames) // self.num_objects
+        self.transform = transform
         print(f"Total number of objects in the set: {self.num_objects}")
         print(f"Total number of views per object: {self.num_views}")
 
@@ -69,7 +74,7 @@ class SRNDataset(torch.utils.data.Dataset):
             height, width = map(int, intrinsic_lines[-1].split())
 
         rgb_image = np.asarray(imageio.imread(rgb_filename))
-        mask_image = (rgb_image != 255).all(axis=-1)[..., None].astype(np.uint8) * 255
+        mask_image = (rgb_image != 255).all(axis=-1)[..., None]
         rgb_image = rgb_image / 255.0
         mask_image = mask_image / 255.0
 
@@ -84,14 +89,65 @@ class SRNDataset(torch.utils.data.Dataset):
         intrinsic[0, 0], intrinsic[1, 1] = focal, focal
         intrinsic[0, 2], intrinsic[1, 2] = cx-crop_width, cy-crop_height
 
+        intrinsic = intrinsic.astype(np.float32)
+        rgb_image = rgb_image.astype(np.float32)
+        mask_image = mask_image.astype(np.float32)
+        pose = pose.astype(np.float32)
+        if self.transform is not None:
+            intrinsic = self.transform(intrinsic)
+            rgb_image = self.transform(rgb_image)
+            mask_image = self.transform(mask_image)
+            pose = self.transform(pose)
+
         sample = {
             "object_id": object_index,
-            "intrinsic": intrinsic.astype(np.float32),
-            "color": rgb_image.astype(np.float32),
-            "mask": mask_image.astype(np.float32),
-            "pose": pose.astype(np.float32),
+            "intrinsic": intrinsic,
+            "color": rgb_image,
+            "mask": mask_image,
+            "pose": pose,
         }
         return sample
+
+
+class SRNDataModule(object):
+    def __init__(
+        self,
+        data_dir: str = "data/",
+        train_batch_size: int = 1,
+        val_batch_size: int = 1,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+    ):
+        super().__init__()
+        self.data_dir = data_dir
+        self.train_batch_size = train_batch_size
+        self.val_batch_size = val_batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+
+        self.transforms = transforms.Compose(
+            [transforms.ToTensor()]
+        )
+        self.data_train = SRNDataset(path=self.data_dir, stage="train", transform=self.transforms)
+        self.data_val = SRNDataset(path=self.data_dir, stage="val", transform=self.transforms)
+
+    def train_dataloader(self):
+        return DataLoader(
+            dataset=self.data_train,
+            batch_size=self.train_batch_size,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            shuffle=False,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            dataset=self.data_val,
+            batch_size=self.val_batch_size,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            shuffle=False,
+        )
 
 
 class CARLADataset(torch.utils.data.Dataset):

@@ -1,4 +1,5 @@
-from typing import Tuple, List, Optional, OrderedDict, Literal, Union, Callable, Any, Sequence
+from typing import Tuple, List, Optional, OrderedDict, Literal, Union, Callable, Any, Sequence, Dict
+import logging
 from functools import wraps
 import math
 import torch
@@ -9,39 +10,10 @@ from omegaconf import DictConfig, OmegaConf
 
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as ddp
+# from torch.nn.parallel import DistributedDataParallel as ddp
 
-from ..cfgnode import CfgNode
-from ..datasets import dataset as datasets
-from ..models import model as network_arch
-
-
-def prepare_device(n_gpus_to_use: int, is_distributed: bool) -> Tuple[torch.device, List[int]]:
-    """ Prepare GPU device if available, and get GPU indices for DataDistributedParallel
-
-    :function: TODO
-    :returns: TODO
-
-    """
-    n_gpu = torch.cuda.device_count()
-    if n_gpus_to_use > 0 and n_gpu == 0:
-        print("Warning: There\'s no GPU available on this machine, training will be performed on CPU.")
-        n_gpus_to_use = 0
-    if n_gpus_to_use > n_gpu:
-        print(f"Warning: The number of GPU\'s configured to use is {n_gpus_to_use}, but only {n_gpu} are "
-              "available on this machine.")
-        n_gpus_to_use = n_gpu
-
-    main_device = torch.device('cuda:0' if n_gpus_to_use > 0 else 'cpu')
-    list_ids = list(range(n_gpus_to_use))
-
-    return main_device, list_ids
-
-
-def is_main_process(is_distributed) -> bool:
-    """ Test whether process is the main worker process
-    """
-    return (dist.get_rank() == 0) if is_distributed else True
+# from ..cfgnode import CfgNode
+# from ..models import model as network_arch
 
 
 def rank_zero_only(fn: Callable) -> Callable:
@@ -49,11 +21,35 @@ def rank_zero_only(fn: Callable) -> Callable:
 
     @wraps(fn)
     def wrapped_fn(*args: Any, **kwargs: Any) -> Optional[Any]:
-        if dist.is_initialized() and dist.get_rank() == 0:
+        if (dist.is_initialized() and dist.get_rank() == 0) or (dist.is_initialized() == False):
             return fn(*args, **kwargs)
         return None
 
     return wrapped_fn
+
+
+def get_logger(name=__name__) -> logging.Logger:
+    """Initializes multi-GPU-friendly python command line logger."""
+
+    logger = logging.getLogger(name)
+
+    # this ensures all logging levels get marked with the rank zero decorator
+    # otherwise logs would get multiplied for each GPU process in multi-GPU setup
+    for level in (
+        "debug",
+        "info",
+        "warning",
+        "error",
+        "exception",
+        "fatal",
+        "critical",
+    ):
+        setattr(logger, level, rank_zero_only(getattr(logger, level)))
+
+    return logger
+
+
+log = get_logger(__name__)
 
 
 def prepare_experiment(cfg: DictConfig):
@@ -77,9 +73,9 @@ def print_config(
     print_order: Sequence[str] = (
         "datamodule",
         "model",
-        "callbacks",
+        # "callbacks",
         "logger",
-        "trainer",
+        # "trainer",
     ),
     resolve: bool = True,
 ) -> None:
@@ -120,161 +116,167 @@ def print_config(
         rich.print(tree, file=file)
 
 
-def prepare_dataloader(stage: Literal["train", "val"], cfg: CfgNode) -> torch.utils.data.DataLoader:
-    """ Prepare the dataloader considering DataDistributedParallel
+def dict_to_device(batch: Dict, device: torch.device) -> Dict:
+    for k, v in batch.items():
+        if torch.is_tensor(v):
+            batch[k] = batch[k].to(device)
+    return batch
 
-    :function:
-        rank: Process rank. 0 == main process
-    :returns: TODO
-
-    """
-    is_distributed = hasattr(cfg, "is_distributed") and cfg.is_distributed
-
-    dataset = getattr(datasets, cfg.dataset.type)(
-        path=cfg.dataset.basedir,
-        stage=stage
-    )
-
-    sampler = torch.utils.data.RandomSampler(
-        dataset,
-        replacement=True,
-        num_samples=cfg.experiment.iterations
-    )
-
-    if is_distributed:
-        sampler = torch.utils.data.DistributedSampler(
-            dataset,
-            num_replicas=dist.get_world_size(),
-            rank=dist.get_rank(),
-            drop_last=False
-        )
-    batch_size = cfg.dataset.train_batch_size if stage == "train" else cfg.dataset.val_batch_size
-    dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size, shuffle=False, num_workers=0, sampler=sampler, pin_memory=True)
-
-    return dataloader, dataset
-
-
-def prepare_models(cfg: CfgNode,
-                   num_objects: int
-                   ) -> "OrderedDict[torch.nn.Module, Union[torch.nn.Module, None]]":
-    """
-    Prepare the torch models
-
-    Args:
-        rank: Process rank. 0 == main process
-    Return:
-        models: Dict containing code model and NeRF model
-        latent_codes: List containing latent codes for
-                      each object style in a semantic category defined by the dataset
-
-    """
-    rank = 0
-    if hasattr(cfg, "is_distributed") and cfg.is_distributed:
-        rank = dist.get_rank()
-
-    models = OrderedDict()
-    models['code'] = network_arch.ShapeTextureCode(
-        num_codes=num_objects,
-        shape_code_size=cfg.models.code.shape_code_size,
-        texture_code_size=cfg.models.code.texture_code_size,
-    ).to(rank)
-
-    models['nerf_coarse'] = getattr(network_arch, cfg.models.nerf_coarse.type)(
-        hidden_size=cfg.models.nerf_coarse.hidden_size,
-        shape_code_size=cfg.models.code.shape_code_size,
-        texture_code_size=cfg.models.code.texture_code_size,
-        num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
-        include_input_xyz=cfg.nerf.embedder.include_input_xyz,
-        num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
-        include_input_dir=cfg.nerf.embedder.include_input_dir,
-    ).to(rank)
-    if hasattr(cfg.models, "nerf_fine"):
-        models['nerf_fine'] = getattr(network_arch, cfg.models.nerf_fine.type)(
-            hidden_size=cfg.models.nerf_fine.hidden_size,
-            shape_code_size=cfg.models.code.shape_code_size,
-            texture_code_size=cfg.models.code.texture_code_size,
-            num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
-            include_input_xyz=cfg.nerf.embedder.include_input_xyz,
-            num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
-            include_input_dir=cfg.nerf.embedder.include_input_dir,
-        ).to(rank)
-
-    if hasattr(cfg, "is_distributed") and cfg.is_distributed:
-        models["code"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
-        models["nerf_coarse"] = ddp(models['nerf_coarse'], device_ids=[rank], output_device=rank)
-        if hasattr(cfg.models, "nerf_fine"):
-            models["nerf_fine"] = ddp(models['nerf_fine'], device_ids=[rank], output_device=rank)
-
-    return models
+# def prepare_dataloader(stage: Literal["train", "val"], cfg: CfgNode) -> torch.utils.data.DataLoader:
+#     """ Prepare the dataloader considering DataDistributedParallel
+#
+#     :function:
+#         rank: Process rank. 0 == main process
+#     :returns: TODO
+#
+#     """
+#     is_distributed = hasattr(cfg, "is_distributed") and cfg.is_distributed
+#
+#     dataset = getattr(datasets, cfg.dataset.type)(
+#         path=cfg.dataset.basedir,
+#         stage=stage
+#     )
+#
+#     sampler = torch.utils.data.RandomSampler(
+#         dataset,
+#         replacement=True,
+#         num_samples=cfg.experiment.iterations
+#     )
+#
+#     if is_distributed:
+#         sampler = torch.utils.data.DistributedSampler(
+#             dataset,
+#             num_replicas=dist.get_world_size(),
+#             rank=dist.get_rank(),
+#             drop_last=False
+#         )
+#     batch_size = cfg.dataset.train_batch_size if stage == "train" else cfg.dataset.val_batch_size
+#     dataloader = torch.utils.data.DataLoader(
+#         dataset, batch_size=batch_size, shuffle=False, num_workers=0, sampler=sampler, pin_memory=True)
+#
+#     return dataloader, dataset
 
 
-def prepare_optimizer(cfg: CfgNode,
-                      models: "OrderedDict[str, torch.nn.Module]"
-                      ) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-    """ Load the optimizer and learning schedule according to the configuration
-
-    Args:
-        cfg: CfgNode object
-        models: torch.nn.Module objects whose parameters need to be optimized
-    Return: TODO
-
-    """
-    var_list = [{'params': models['code'].parameters(), 'lr': cfg.optimizer.embedding_lr}]
-
-    var_list += [{'params': models['nerf_coarse'].parameters()}]
-    if 'nerf_fine' in models:
-        var_list += [{'params': models['nerf_fine'].parameters()}]
-    optimizer = getattr(torch.optim, cfg.optimizer.type)(var_list, lr=cfg.optimizer.lr)
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lr_lambda=lambda epoch: cfg.optimizer.scheduler_gamma ** (
-            epoch / cfg.optimizer.scheduler_step_size)
-    )
-    return optimizer, scheduler
-
-
-def load_checkpoint(cfg: CfgNode,
-                    models: "OrderedDict[str, torch.nn.Module]",
-                    optimizer: torch.optim.Optimizer
-                    ) -> int:
-    """
-    Load checkpoint given a checkpoint file and initialize the starting iteration
-
-    Args:
-        cfg: CfgNode object
-        models: torch.nn.Module objects whose parameters are to be loaded
-        optimizer: optimizer whose parameters are to be loaded
-    Return:
-        start iteration
-
-    """
-    start_iter = 0
-    is_distributed = hasattr(cfg, "is_distributed") and cfg.is_distributed
-    rank = 0 if not is_distributed else dist.get_rank()
-
-    checkpoint_file = Path(cfg.load_checkpoint)
-    if checkpoint_file.exists() and checkpoint_file.is_file() and checkpoint_file.suffix == ".ckpt":
-        map_location = {"cuda:0": f"cuda:{rank}"}
-        checkpoint = torch.load(cfg.load_checkpoint, map_location=map_location)
-        # Ensure that all loading by all processes is done before any process has started saving models
-        if is_distributed:
-            torch.distributed.barrier()
-
-        for model_name, model in models.items():
-            if not is_distributed:
-                torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
-                    checkpoint[f"model_{model_name}_state_dict"], "module.")
-            model.load_state_dict(
-                checkpoint[f"model_{model_name}_state_dict"])
-
-        optimizer.load_state_dict(
-            checkpoint["optimizer_state_dict"])
-        start_iter = checkpoint["iter"]
-
-    return start_iter
-
+# def prepare_models(cfg: CfgNode,
+#                    num_objects: int
+#                    ) -> "OrderedDict[torch.nn.Module, Union[torch.nn.Module, None]]":
+#     """
+#     Prepare the torch models
+#
+#     Args:
+#         rank: Process rank. 0 == main process
+#     Return:
+#         models: Dict containing code model and NeRF model
+#         latent_codes: List containing latent codes for
+#                       each object style in a semantic category defined by the dataset
+#
+#     """
+#     rank = 0
+#     if hasattr(cfg, "is_distributed") and cfg.is_distributed:
+#         rank = dist.get_rank()
+#
+#     models = OrderedDict()
+#     models['code'] = network_arch.ShapeTextureCode(
+#         num_codes=num_objects,
+#         shape_code_size=cfg.models.code.shape_code_size,
+#         texture_code_size=cfg.models.code.texture_code_size,
+#     ).to(rank)
+#
+#     models['nerf_coarse'] = getattr(network_arch, cfg.models.nerf_coarse.type)(
+#         hidden_size=cfg.models.nerf_coarse.hidden_size,
+#         shape_code_size=cfg.models.code.shape_code_size,
+#         texture_code_size=cfg.models.code.texture_code_size,
+#         num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
+#         include_input_xyz=cfg.nerf.embedder.include_input_xyz,
+#         num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
+#         include_input_dir=cfg.nerf.embedder.include_input_dir,
+#     ).to(rank)
+#     if hasattr(cfg.models, "nerf_fine"):
+#         models['nerf_fine'] = getattr(network_arch, cfg.models.nerf_fine.type)(
+#             hidden_size=cfg.models.nerf_fine.hidden_size,
+#             shape_code_size=cfg.models.code.shape_code_size,
+#             texture_code_size=cfg.models.code.texture_code_size,
+#             num_encoding_fn_xyz=cfg.nerf.embedder.num_encoding_fn_xyz,
+#             include_input_xyz=cfg.nerf.embedder.include_input_xyz,
+#             num_encoding_fn_dir=cfg.nerf.embedder.num_encoding_fn_dir,
+#             include_input_dir=cfg.nerf.embedder.include_input_dir,
+#         ).to(rank)
+#
+#     if hasattr(cfg, "is_distributed") and cfg.is_distributed:
+#         models["code"] = ddp(models["embedding"], device_ids=[rank], output_device=rank)
+#         models["nerf_coarse"] = ddp(models['nerf_coarse'], device_ids=[rank], output_device=rank)
+#         if hasattr(cfg.models, "nerf_fine"):
+#             models["nerf_fine"] = ddp(models['nerf_fine'], device_ids=[rank], output_device=rank)
+#
+#     return models
+#
+#
+# def prepare_optimizer(cfg: CfgNode,
+#                       models: "OrderedDict[str, torch.nn.Module]"
+#                       ) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
+#     """ Load the optimizer and learning schedule according to the configuration
+#
+#     Args:
+#         cfg: CfgNode object
+#         models: torch.nn.Module objects whose parameters need to be optimized
+#     Return: TODO
+#
+#     """
+#     var_list = [{'params': models['code'].parameters(), 'lr': cfg.optimizer.embedding_lr}]
+#
+#     var_list += [{'params': models['nerf_coarse'].parameters()}]
+#     if 'nerf_fine' in models:
+#         var_list += [{'params': models['nerf_fine'].parameters()}]
+#     optimizer = getattr(torch.optim, cfg.optimizer.type)(var_list, lr=cfg.optimizer.lr)
+#
+#     scheduler = torch.optim.lr_scheduler.LambdaLR(
+#         optimizer,
+#         lr_lambda=lambda epoch: cfg.optimizer.scheduler_gamma ** (
+#             epoch / cfg.optimizer.scheduler_step_size)
+#     )
+#     return optimizer, scheduler
+#
+#
+# def load_checkpoint(cfg: CfgNode,
+#                     models: "OrderedDict[str, torch.nn.Module]",
+#                     optimizer: torch.optim.Optimizer
+#                     ) -> int:
+#     """
+#     Load checkpoint given a checkpoint file and initialize the starting iteration
+#
+#     Args:
+#         cfg: CfgNode object
+#         models: torch.nn.Module objects whose parameters are to be loaded
+#         optimizer: optimizer whose parameters are to be loaded
+#     Return:
+#         start iteration
+#
+#     """
+#     start_iter = 0
+#     is_distributed = hasattr(cfg, "is_distributed") and cfg.is_distributed
+#     rank = 0 if not is_distributed else dist.get_rank()
+#
+#     checkpoint_file = Path(cfg.load_checkpoint)
+#     if checkpoint_file.exists() and checkpoint_file.is_file() and checkpoint_file.suffix == ".ckpt":
+#         map_location = {"cuda:0": f"cuda:{rank}"}
+#         checkpoint = torch.load(cfg.load_checkpoint, map_location=map_location)
+#         # Ensure that all loading by all processes is done before any process has started saving models
+#         if is_distributed:
+#             torch.distributed.barrier()
+#
+#         for model_name, model in models.items():
+#             if not is_distributed:
+#                 torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
+#                     checkpoint[f"model_{model_name}_state_dict"], "module.")
+#             model.load_state_dict(
+#                 checkpoint[f"model_{model_name}_state_dict"])
+#
+#         optimizer.load_state_dict(
+#             checkpoint["optimizer_state_dict"])
+#         start_iter = checkpoint["iter"]
+#
+#     return start_iter
+#
 
 def mse2psnr(mse_val: float) -> float:
     """
