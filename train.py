@@ -1,6 +1,7 @@
 from typing import Callable
 import os
 import time
+from pathlib import Path
 
 import hydra
 import omegaconf
@@ -44,13 +45,14 @@ def train(cfg: DictConfig) -> None:
     # Load Data
     log.info(f"Instantiating datamodule: {cfg.datamodule._target_}")
     datamodule = hydra.utils.instantiate(cfg.datamodule)
+    datamodule.setup(rank=cfg.rank, shuffle=True, seed=seed)
 
     # Load model
     log.info(f"Instantiating model: {cfg.model._target_}")
     model = hydra.utils.instantiate(cfg.model)
 
     # Load RaySampler
-    sample = next(iter(datamodule.train_dataloader()))
+    sample = next(iter(datamodule.train_iterator()))
     height, width = sample["color"].shape[-2:]
     intrinsic = sample["intrinsic"][0]
     log.info(f"Instantiating Ray sampler: {cfg.ray_sampler._target_}")
@@ -64,14 +66,16 @@ def train(cfg: DictConfig) -> None:
     ]
     optimizer = hydra.utils.instantiate(cfg.optim, optimization_params)
 
-    datamodule = utils.setup_datamodule(datamodule)
+    train_iter = 0
+    if cfg.checkpoint_dir:
+        train_iter, model, optimizer = utils.load_checkpoint(cfg, model, optimizer)
+
     model.train()
     model.to(device)
-    train_dataloader = datamodule.train_dataloader()
-    val_dataloader = datamodule.val_dataloader()
-    for train_iter, batch in enumerate(train_dataloader):
+    for train_iter in range(train_iter, cfg.experiment.iterations):
 
         then = time.time()
+        batch = next(datamodule.train_iterator())
         batch = utils.dict_to_device(batch, device)
 
         target_image = batch["color"][:, :3, ...]
@@ -101,7 +105,8 @@ def train(cfg: DictConfig) -> None:
             log.info(log_string)
 
         if train_iter != 0 and train_iter % cfg.experiment.validation_freq == 0:
-            val_target_image, rgb_image, depth_image = validate(cfg, val_dataloader, model, ray_sampler, device)
+            val_target_image, rgb_image, depth_image = validate(cfg, datamodule, model, ray_sampler, device)
+
             val_target_image = val_target_image.squeeze().permute(1, 2, 0)
             mse = torchmetrics.functional.mean_squared_error(rgb_image, val_target_image)
             psnr = torchmetrics.functional.peak_signal_noise_ratio(rgb_image, val_target_image)
@@ -110,14 +115,23 @@ def train(cfg: DictConfig) -> None:
             writer.add_image("val/rgb_image", rgb_image, train_iter, dataformats="HWC")
             writer.add_image("val/depth_image", depth_image, train_iter, dataformats="HWC")
 
+        if train_iter != 0 and train_iter % cfg.experiment.save_freq == 0:
+            ckpt_dict = {
+                "iter": train_iter,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "loss": loss.item(),
+            }
+            torch.save(ckpt_dict, Path(writer.log_dir) / f"checkpoint{train_iter}.ckpt")
+
 
 def validate(cfg: DictConfig,
-             dataloader: Callable,
+             datamodule: Callable,
              model: torch.nn.Module,
              ray_sampler: nerf.RaySampler,
              device: torch.device
              ):
-    batch = next(iter(dataloader))
+    batch = next(datamodule.val_iterator())
     batch = utils.dict_to_device(batch, device)
     target_image = batch["color"][:, :3, ...]
     im_height, im_width = target_image.shape[-2], target_image.shape[-1]

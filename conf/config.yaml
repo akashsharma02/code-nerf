@@ -6,7 +6,7 @@ defaults:
   - override hydra/hydra_logging: colorlog
 
 distributed: True
-load_checkpoint: ~
+checkpoint_dir: ~
 gpus: ~
 dist_url: "env://"
 cudnn_benchmark: True
@@ -20,10 +20,12 @@ ray_sampler:
 experiment:
   randomseed: 1
   logdir: ${oc.env:LOG_DIR}
-  id: "hydra-test"
+  id: "test"
   encoder_lr: 1e-4
   decoder_lr: 1e-4
   runs_per_image: 2
+  iterations: 500000
   validation_freq: 1000
   print_freq: 100
+  save_freq: 25000
 

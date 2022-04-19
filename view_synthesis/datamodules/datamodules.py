@@ -9,6 +9,40 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
 
+class InfiniteSampler(torch.utils.data.Sampler):
+    def __init__(self, dataset, rank=0, num_replicas=1, shuffle=True, seed=0, window_size=0.5):
+        assert len(dataset) > 0
+        assert num_replicas > 0
+        assert 0 <= rank < num_replicas
+        assert 0 <= window_size <= 1
+        super().__init__(dataset)
+        self.dataset = dataset
+        self.rank = rank
+        self.num_replicas = num_replicas
+        self.shuffle = shuffle
+        self.seed = seed
+        self.window_size = window_size
+
+    def __iter__(self):
+        order = np.arange(len(self.dataset))
+        rnd = None
+        window = 0
+        if self.shuffle:
+            rnd = np.random.RandomState(self.seed)
+            rnd.shuffle(order)
+            window = int(np.rint(order.size * self.window_size))
+
+        idx = 0
+        while True:
+            i = idx % order.size
+            if idx % self.num_replicas == self.rank:
+                yield order[i]
+            if window >= 2:
+                j = (i - rnd.randint(window)) % order.size
+                order[i], order[j] = order[j], order[i]
+            idx += 1
+
+
 class SRNDataset(torch.utils.data.Dataset):
     """
     Dataset from Scene Representation Networks (V. Sitzmann et al 2020)
@@ -131,29 +165,33 @@ class SRNDataModule(object):
         )
         self.data_train = SRNDataset(path=self.data_dir, stage="train", transform=self.transforms)
         self.data_val = SRNDataset(path=self.data_dir, stage="val", transform=self.transforms)
-        self.setup_dataloader()
 
-    def setup_dataloader(self):
+    def setup(self, rank=0, num_replicas=1, shuffle=True, seed=0):
+        self.train_sampler = InfiniteSampler(self.data_train, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
+        self.val_sampler = InfiniteSampler(self.data_val, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
+
         self.train_loader = DataLoader(
             dataset=self.data_train,
+            sampler=self.train_sampler,
             batch_size=self.train_batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=self.shuffle,
         )
         self.val_loader = DataLoader(
             dataset=self.data_val,
+            sampler=self.val_sampler,
             batch_size=self.val_batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=self.shuffle,
         )
+        self.train_iter = iter(self.train_loader)
+        self.val_iter = iter(self.val_loader)
 
-    def train_dataloader(self):
-        return self.train_loader
+    def train_iterator(self):
+        return self.train_iter
 
-    def val_dataloader(self):
-        return self.val_loader
+    def val_iterator(self):
+        return self.val_iter
 
 
 class CARLADataset(torch.utils.data.Dataset):

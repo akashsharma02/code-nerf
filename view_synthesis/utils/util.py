@@ -156,3 +156,27 @@ def log_losses(writer: SummaryWriter,
         log_string += f"{key}: {val:>4.4f} "
 
     return log_string
+
+
+def load_checkpoint(cfg: DictConfig,
+                    model: torch.nn.Module,
+                    optimizer: torch.optim.Optimizer
+                    ) -> int:
+    """
+    Load checkpoint given a checkpoint file and initialize the starting iteration
+    Args:
+        cfg: CfgNode object
+        models: torch.nn.Module objects whose parameters are to be loaded
+        optimizer: optimizer whose parameters are to be loaded
+    Return:
+        start iteration
+    """
+    checkpoint_file = Path(cfg.checkpoint_dir)
+    if checkpoint_file.exists() and checkpoint_file.is_file() and checkpoint_file.suffix == ".ckpt":
+        checkpoint = torch.load(cfg.load_checkpoint)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(
+            checkpoint["optimizer_state_dict"])
+        train_iter = checkpoint["iter"]
+
+    return train_iter, model, optimizer
