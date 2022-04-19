@@ -63,7 +63,6 @@ class SRNDataset(torch.utils.data.Dataset):
         return len(self.rgb_all_filenames)
 
     def __getitem__(self, index):
-
         object_index, rgb_filename = self.rgb_all_filenames[index]
         _, pose_filename = self.pose_all_filenames[index]
         intrinsic_filename = self.intrinsic[object_index]
@@ -117,6 +116,7 @@ class SRNDataModule(object):
         val_batch_size: int = 1,
         num_workers: int = 0,
         pin_memory: bool = False,
+        shuffle: bool = False
     ):
         super().__init__()
         self.data_dir = data_dir
@@ -124,30 +124,36 @@ class SRNDataModule(object):
         self.val_batch_size = val_batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.shuffle = shuffle
 
         self.transforms = transforms.Compose(
             [transforms.ToTensor()]
         )
         self.data_train = SRNDataset(path=self.data_dir, stage="train", transform=self.transforms)
         self.data_val = SRNDataset(path=self.data_dir, stage="val", transform=self.transforms)
+        self.setup_dataloader()
 
-    def train_dataloader(self):
-        return DataLoader(
+    def setup_dataloader(self):
+        self.train_loader = DataLoader(
             dataset=self.data_train,
             batch_size=self.train_batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=False,
+            shuffle=self.shuffle,
         )
-
-    def val_dataloader(self):
-        return DataLoader(
+        self.val_loader = DataLoader(
             dataset=self.data_val,
             batch_size=self.val_batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=False,
+            shuffle=self.shuffle,
         )
+
+    def train_dataloader(self):
+        return self.train_loader
+
+    def val_dataloader(self):
+        return self.val_loader
 
 
 class CARLADataset(torch.utils.data.Dataset):

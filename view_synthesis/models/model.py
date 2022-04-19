@@ -1,4 +1,4 @@
-from typing import NamedTuple, Literal, Tuple, Union
+from typing import NamedTuple, Literal, Tuple, Union, Optional
 from omegaconf import DictConfig
 import numpy as np
 import torch
@@ -75,7 +75,7 @@ class PointSampler(object):
     """Sample 3D points along the given rays"""
 
     def __init__(self,
-                 num_samples,
+                 num_samples: int,
                  near: float,
                  far: float,
                  spacing_mode: Literal["lindisp", "lindepth"],
@@ -171,7 +171,7 @@ class RaySampler(object):
             dim=-1,
         )
 
-    def sample(self, world_T_camera: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+    def sample(self, ray_bundle: Optional[torch.Tensor] = None, world_T_camera: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
         """
         Rotate the bundle of rays given the camera pose and return a random subset of rays
 
@@ -183,10 +183,15 @@ class RaySampler(object):
             select_inds: np.ndarray [batch_size*num_samples]
 
         """
-        batch_size = world_T_camera.shape[0]
+        batch_size = None
+        if ray_bundle is None:
+            assert world_T_camera is None, "world_T_camera pose required when ray_bundle is not supplied"
+            batch_size = world_T_camera.shape[0]
+            ray_bundle = self.get_bundle(world_T_camera)
+        else:
+            batch_size = ray_bundle.origins.shape[0]
 
-        rays = self.get_bundle(world_T_camera)
-        ray_origins, ray_directions = rays.origins.flatten(1, 2), rays.directions.flatten(1, 2)
+        ray_origins, ray_directions = ray_bundle.origins.flatten(1, 2), ray_bundle.directions.flatten(1, 2)
 
         select_inds = []
         pixel_range = np.arange(0, ray_origins.shape[-2])
@@ -415,7 +420,6 @@ class ImageEncoder(nn.Module):
 class GenerativeNeRF(nn.Module):
     def __init__(self,
                  point_sampler: PointSampler,
-                 ray_sampler: RaySampler,
                  code_size: int = 128,
                  decoder_hidden_size: int = 128,
                  num_encoding_xyz=6,
@@ -430,7 +434,6 @@ class GenerativeNeRF(nn.Module):
             latent_size=code_size
         )
         self.point_sampler = point_sampler
-        self.ray_sampler = ray_sampler
         self.decoder = NeRFDecoderNet(
             decoder_hidden_size,
             code_size,
@@ -439,7 +442,7 @@ class GenerativeNeRF(nn.Module):
             include_input
         )
 
-    def forward(self, x: torch.Tensor, world_T_camera: torch.Tensor):
+    def forward(self, x: torch.Tensor, rays: Rays, selected_ray_idxs: torch.Tensor, world_T_camera: torch.Tensor):
         """
         Forward function for GenerativeNeRF model
         Args:
@@ -448,10 +451,49 @@ class GenerativeNeRF(nn.Module):
             viewdirs: torch.Tensor [batch_size, 3]
         """
         shape_code, texture_code = self.encoder(x)
-        rays, select_inds = self.ray_sampler.sample(world_T_camera)
+        # rays, select_inds = self.ray_sampler.sample(world_T_camera)
         pts, z_vals = self.point_sampler.sample_uniform(rays)
         num_rays, num_points = rays.origins.shape[0], pts.shape[1]
         shape_code = shape_code[:, None, :].expand(num_rays, num_points, -1)
         texture_code = texture_code[:, None, :].expand(num_rays, num_points, -1)
-        rgb, sigma = self.decoder(shape_code, texture_code, pts)
-        return rgb, sigma
+        rgb_per_xyz, sigma_per_xyz = self.decoder(shape_code, texture_code, pts)
+        rgb_per_ray, disparity_per_ray, _, _, depth_per_ray = volume_render(rgb_per_xyz, sigma_per_xyz, z_vals, rays.directions)
+        return rgb_per_ray, depth_per_ray
+
+
+def widened_sigmoid(x, eps=0.001):
+    return torch.sigmoid(x) * (1 + 2 * eps) - eps
+
+
+def shifted_softplus(x):
+    return torch.nn.functional.softplus(x-1)
+
+
+def volume_render(
+    rgb_points, sigma,
+    depth_values,
+    ray_directions,
+):
+    dists = depth_values[..., 1:] - depth_values[..., :-1]
+    # Add distance from far-limit to infinity to retain shape (64 samples or 128 samples)
+    dists = torch.cat((dists, torch.full_like(dists[..., :1], 1e10)), dim=-1)
+
+    delta = dists * ray_directions[..., None, :].norm(p=2, dim=-1)
+
+    sigma_a = shifted_softplus(sigma.squeeze())
+    sigma_delta = sigma_a * delta
+
+    rgb_rays = widened_sigmoid(rgb_points)
+    transmittance = torch.exp(-torch.cat([
+        torch.zeros_like(sigma_delta[..., :1]),
+        torch.cumsum(sigma_delta[..., :-1], axis=-1)
+    ], dim=-1))
+    alpha = 1.0 - torch.exp(-sigma_delta)
+    weights = alpha * transmittance
+
+    rgb_map = (weights[..., None] * rgb_rays).sum(dim=-2)
+    depth_map = (weights * depth_values).sum(dim=-1)
+    acc_map = weights.sum(dim=-1)
+    disp_map = 1.0 / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / acc_map)
+
+    return rgb_map, disp_map, acc_map, weights, depth_map

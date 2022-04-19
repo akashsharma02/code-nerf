@@ -12,6 +12,10 @@ dist_url: "env://"
 cudnn_benchmark: True
 data_dir: ${oc.env:DATA_DIR}
 
+shuffle_rays: True # Randomize rays, else take rays in order
+ray_sampler:
+  _target_: view_synthesis.models.RaySampler
+  num_samples: ${oc.decode:${oc.env:NUM_RAYS}}
 
 experiment:
   randomseed: 1
@@ -19,3 +23,7 @@ experiment:
   id: "hydra-test"
   encoder_lr: 1e-4
   decoder_lr: 1e-4
+  runs_per_image: 2
+  validation_freq: 1000
+  print_freq: 100
+
