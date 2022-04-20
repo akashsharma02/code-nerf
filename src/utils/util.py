@@ -180,3 +180,15 @@ def load_checkpoint(cfg: DictConfig,
         train_iter = checkpoint["iter"]
 
     return train_iter, model, optimizer
+
+
+def mse2psnr(mse_val: float) -> float:
+    """
+    Calculate PSNR from MSE
+    :function: TODO
+    :returns: TODO
+    """
+    # For numerical stability, avoid a zero mse loss.
+    if mse_val == 0:
+        mse_val = 1e-5
+    return -10.0 * math.log10(mse_val)

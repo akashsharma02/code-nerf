@@ -1,11 +1,11 @@
-_target_: view_synthesis.models.GenerativeNeRF
+_target_: src.models.GenerativeNeRF
 code_size: 256
 decoder_hidden_size: 256
 num_encoding_xyz: 10
 log_sampling: True
 include_input: True
 point_sampler:
-  _target_: view_synthesis.models.PointSampler
+  _target_: src.models.PointSampler
   num_samples: ${oc.decode:${oc.env:NUM_POINTS}}
   near: 0.8
   far: 1.8

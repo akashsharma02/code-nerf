@@ -1,5 +1,5 @@
 defaults:
-  - datamodule: srn_cars
+  - datamodule: carla_cars
   - model: generative_nerf
   - optim: adamw
   - override hydra/job_logging: colorlog
@@ -9,18 +9,19 @@ distributed: True
 checkpoint_dir: ~
 gpus: ~
 dist_url: "env://"
-cudnn_benchmark: True
+cudnn_benchmark: False
 data_dir: ${oc.env:DATA_DIR}
 
-shuffle_rays: True # Randomize rays, else take rays in order
-ray_sampler:
-  _target_: view_synthesis.models.RaySampler
-  num_samples: ${oc.decode:${oc.env:NUM_RAYS}}
+num_rays: ${oc.decode:${oc.env:NUM_RAYS}}
+# shuffle_rays: True # Randomize rays, else take rays in order
+# ray_sampler:
+#   _target_: src.models.RaySampler
+#   num_samples: ${oc.decode:${oc.env:NUM_RAYS}}
 
 experiment:
   randomseed: 1
   logdir: ${oc.env:LOG_DIR}
-  id: "test"
+  id: "test-carla"
   encoder_lr: 1e-4
   decoder_lr: 1e-4
   runs_per_image: 2

@@ -1,14 +1,7 @@
-from typing import NamedTuple, Literal, Tuple, Union, Optional
-from omegaconf import DictConfig
-import numpy as np
+from typing import Literal, Tuple
 import torch
 import torchvision
 import torch.nn as nn
-
-
-class Rays(NamedTuple):
-    origins: torch.Tensor
-    directions: torch.Tensor
 
 
 class ShapeTexturecode(nn.Module):
@@ -100,7 +93,7 @@ class PointSampler(object):
         self.upper = torch.cat((self.mids, self.z_vals[..., -1:]), dim=-1)
         self.lower = torch.cat((self.z_vals[..., :1], self.mids), dim=-1)
 
-    def sample_uniform(self, rays: Rays) -> Tuple[torch.Tensor, torch.Tensor]:
+    def sample_uniform(self, rays: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """ Uniform sample points according to spacing mode along the ray
 
         :function:
@@ -111,117 +104,118 @@ class PointSampler(object):
             z_vals: [num_random_rays, num_samples, 3] z_vals along the ray
 
         """
-        num_random_rays = rays.origins.shape[-2]
+        ray_origins, ray_directions = rays[..., :3], rays[..., 3:]
+        num_random_rays = ray_origins.shape[-2]
         if self.perturb:
             upper = self.upper.expand(num_random_rays, self.num_samples)
             lower = self.lower.expand(num_random_rays, self.num_samples)
-            t_rand = torch.rand_like(upper, dtype=rays.origins.dtype)
+            t_rand = torch.rand_like(upper, dtype=ray_origins.dtype)
             z_vals = lower + (upper - lower) * t_rand
         else:
             z_vals = self.z_vals.expand(num_random_rays, self.num_samples)
-        z_vals = z_vals.to(rays.origins.device)
+        z_vals = z_vals.to(rays.device)
         assert z_vals.shape == torch.Size([num_random_rays, self.num_samples]), "Incorrect shape of depth samples z_vals"
-        pts = rays.origins[..., None, :] + rays.directions[..., None, :] * z_vals[..., :, None]
+        pts = ray_origins[..., None, :] + ray_directions[..., None, :] * z_vals[..., :, None]
         return pts, z_vals
 
 
-class RaySampler(object):
-
-    """RaySampler samples rays for a given image size and intrinsics """
-
-    def __init__(self, num_samples: int, height: int, width: int, intrinsics: Union[torch.Tensor, np.ndarray]):
-        """ Prepares a ray bundle for a given image size and intrinsics
-
-        :Function: intrinsics: torch.Tensor 4x4
-
-        """
-        assert height > 0 and width > 0, "Height and width must be positive integers"
-        assert num_samples > 0 and num_samples <= height * width, "Sample size must be a positive number less than height * width"
-
-        self.height = height
-        self.width = width
-        self.num_samples = num_samples
-
-        if isinstance(intrinsics, np.ndarray):
-            intrinsics = torch.from_numpy(intrinsics)
-        assert intrinsics.shape == torch.Size(
-            [1, 4, 4]), "Incorrect intrinsics shape"
-        self.intrinsics = intrinsics
-        dtype = self.intrinsics.dtype
-        device = self.intrinsics.device
-        self.focal_length = self.intrinsics[..., 0, 0]
-        self.cx = self.intrinsics[..., 0, 2]
-        self.cy = self.intrinsics[..., 1, 2]
-
-        ii, jj = torch.meshgrid(
-            torch.arange(
-                width, dtype=dtype, device=device
-            ),
-            torch.arange(
-                height, dtype=dtype, device=device
-            ),
-            indexing='xy'
-        )
-        self.directions = torch.stack(
-            [
-                (ii - self.cx) / self.focal_length,
-                -(jj - self.cy) / self.focal_length,
-                -torch.ones_like(ii),
-            ],
-            dim=-1,
-        )
-
-    def sample(self, ray_bundle: Optional[torch.Tensor] = None, world_T_camera: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
-        """
-        Rotate the bundle of rays given the camera pose and return a random subset of rays
-
-        :function:
-            world_T_camera: [batch, 4, 4] torch.Tensor camera pose (SE3)
-        :returns:
-            ray origins: torch.Tensor [batch_size*num_samples, 3]
-            ray directions: torch.Tensor [batch_size*num_samples, 3]
-            select_inds: np.ndarray [batch_size*num_samples]
-
-        """
-        batch_size = None
-        if ray_bundle is None:
-            assert world_T_camera is None, "world_T_camera pose required when ray_bundle is not supplied"
-            batch_size = world_T_camera.shape[0]
-            ray_bundle = self.get_bundle(world_T_camera)
-        else:
-            batch_size = ray_bundle.origins.shape[0]
-
-        ray_origins, ray_directions = ray_bundle.origins.flatten(1, 2), ray_bundle.directions.flatten(1, 2)
-
-        select_inds = []
-        pixel_range = np.arange(0, ray_origins.shape[-2])
-        for _ in range(batch_size):
-            select_inds.append(np.random.permutation(pixel_range)[:self.num_samples])
-        select_inds = np.asarray(select_inds)
-
-        ray_origins = [ray_origins[i, select_inds[i], :] for i in range(batch_size)]
-        ray_directions = [ray_directions[i, select_inds[i], :] for i in range(batch_size)]
-        ray_origins = torch.cat(ray_origins, dim=0)
-        ray_directions = torch.cat(ray_directions, dim=0)
-
-        return Rays(ray_origins, ray_directions), select_inds
-
-    def get_bundle(self, world_T_camera: torch.Tensor):
-        """
-            Rotate the bundle of rays given the camera pose
-
-        :function:
-            world_T_camera: 4x4 torch.Tensor camera pose (SE3)
-        :returns:
-            ray origins: torch.Tensor [batch, H, W, 3]
-            ray directions: torch.Tensor [batch, H, W, 3]
-
-        """
-        directions = self.directions[..., None].to(world_T_camera.device)
-        ray_directions = torch.einsum('hwij, bji->bhwj', directions, world_T_camera[..., :3, :3]).contiguous()
-        ray_origins = world_T_camera[..., :3, -1][:, None, None, :].expand(ray_directions.shape)
-        return Rays(ray_origins, ray_directions)
-
+# class RaySampler(object):
+#
+#     """RaySampler samples rays for a given image size and intrinsics """
+#
+#     def __init__(self, num_samples: int, height: int, width: int, intrinsics: Union[torch.Tensor, np.ndarray]):
+#         """ Prepares a ray bundle for a given image size and intrinsics
+#
+#         :Function: intrinsics: torch.Tensor 4x4
+#
+#         """
+#         assert height > 0 and width > 0, "Height and width must be positive integers"
+#         assert num_samples > 0 and num_samples <= height * width, "Sample size must be a positive number less than height * width"
+#
+#         self.height = height
+#         self.width = width
+#         self.num_samples = num_samples
+#
+#         if isinstance(intrinsics, np.ndarray):
+#             intrinsics = torch.from_numpy(intrinsics)
+#         assert intrinsics.shape == torch.Size(
+#             [1, 4, 4]), "Incorrect intrinsics shape"
+#         self.intrinsics = intrinsics
+#         dtype = self.intrinsics.dtype
+#         device = self.intrinsics.device
+#         self.focal_length = self.intrinsics[..., 0, 0]
+#         self.cx = self.intrinsics[..., 0, 2]
+#         self.cy = self.intrinsics[..., 1, 2]
+#
+#         ii, jj = torch.meshgrid(
+#             torch.arange(
+#                 width, dtype=dtype, device=device
+#             ),
+#             torch.arange(
+#                 height, dtype=dtype, device=device
+#             ),
+#             indexing='xy'
+#         )
+#         self.directions = torch.stack(
+#             [
+#                 (ii - self.cx) / self.focal_length,
+#                 -(jj - self.cy) / self.focal_length,
+#                 -torch.ones_like(ii),
+#             ],
+#             dim=-1,
+#         )
+#
+#     def sample(self, ray_bundle: Optional[torch.Tensor] = None, world_T_camera: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+#         """
+#         Rotate the bundle of rays given the camera pose and return a random subset of rays
+#
+#         :function:
+#             world_T_camera: [batch, 4, 4] torch.Tensor camera pose (SE3)
+#         :returns:
+#             ray origins: torch.Tensor [batch_size*num_samples, 3]
+#             ray directions: torch.Tensor [batch_size*num_samples, 3]
+#             select_inds: np.ndarray [batch_size*num_samples]
+#
+#         """
+#         batch_size = None
+#         if ray_bundle is None:
+#             assert world_T_camera is None, "world_T_camera pose required when ray_bundle is not supplied"
+#             batch_size = world_T_camera.shape[0]
+#             ray_bundle = self.get_bundle(world_T_camera)
+#         else:
+#             batch_size = ray_bundle.origins.shape[0]
+#
+#         ray_origins, ray_directions = ray_bundle.origins.flatten(1, 2), ray_bundle.directions.flatten(1, 2)
+#
+#         select_inds = []
+#         pixel_range = np.arange(0, ray_origins.shape[-2])
+#         for _ in range(batch_size):
+#             select_inds.append(np.random.permutation(pixel_range)[:self.num_samples])
+#         select_inds = np.asarray(select_inds)
+#
+#         ray_origins = [ray_origins[i, select_inds[i], :] for i in range(batch_size)]
+#         ray_directions = [ray_directions[i, select_inds[i], :] for i in range(batch_size)]
+#         ray_origins = torch.cat(ray_origins, dim=0)
+#         ray_directions = torch.cat(ray_directions, dim=0)
+#
+#         return Rays(ray_origins, ray_directions), select_inds
+#
+#     def get_bundle(self, world_T_camera: torch.Tensor):
+#         """
+#             Rotate the bundle of rays given the camera pose
+#
+#         :function:
+#             world_T_camera: 4x4 torch.Tensor camera pose (SE3)
+#         :returns:
+#             ray origins: torch.Tensor [batch, H, W, 3]
+#             ray directions: torch.Tensor [batch, H, W, 3]
+#
+#         """
+#         directions = self.directions[..., None].to(world_T_camera.device)
+#         ray_directions = torch.einsum('hwij, bji->bhwj', directions, world_T_camera[..., :3, :3]).contiguous()
+#         ray_origins = world_T_camera[..., :3, -1][:, None, None, :].expand(ray_directions.shape)
+#         return Rays(ray_origins, ray_directions)
+#
 
 class NeRFDecoderNet(nn.Module):
     def __init__(
@@ -442,7 +436,7 @@ class GenerativeNeRF(nn.Module):
             include_input
         )
 
-    def forward(self, x: torch.Tensor, rays: Rays, selected_ray_idxs: torch.Tensor, world_T_camera: torch.Tensor):
+    def forward(self, x: torch.Tensor, rays: torch.Tensor):
         """
         Forward function for GenerativeNeRF model
         Args:
@@ -453,11 +447,12 @@ class GenerativeNeRF(nn.Module):
         shape_code, texture_code = self.encoder(x)
         # rays, select_inds = self.ray_sampler.sample(world_T_camera)
         pts, z_vals = self.point_sampler.sample_uniform(rays)
-        num_rays, num_points = rays.origins.shape[0], pts.shape[1]
+        num_rays, num_points = rays.shape[0], pts.shape[1]
         shape_code = shape_code[:, None, :].expand(num_rays, num_points, -1)
         texture_code = texture_code[:, None, :].expand(num_rays, num_points, -1)
         rgb_per_xyz, sigma_per_xyz = self.decoder(shape_code, texture_code, pts)
-        rgb_per_ray, disparity_per_ray, _, _, depth_per_ray = volume_render(rgb_per_xyz, sigma_per_xyz, z_vals, rays.directions)
+        ray_directions = rays[..., 3:]
+        rgb_per_ray, disparity_per_ray, _, _, depth_per_ray = volume_render(rgb_per_xyz, sigma_per_xyz, z_vals, ray_directions)
         return rgb_per_ray, depth_per_ray
 
 
