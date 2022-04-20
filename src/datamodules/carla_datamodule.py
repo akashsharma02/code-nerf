@@ -37,7 +37,7 @@ class CARLADataset(torch.utils.data.Dataset):
         self.intrinsic = np.eye(4)
         self.intrinsic[:3, :3] = intrinsic
         # We divide by 2, since we reduce the resolution of target image by 2
-        self.intrinsic[:2, :3] = self.intrinsic[:2, :3]/4
+        self.intrinsic[:2, :3] = self.intrinsic[:2, :3]/2
         self.intrinsic = self.transform(self.intrinsic.astype(np.float32))[0]
 
         self.dataset_name = "carla-cars"
