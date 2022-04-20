@@ -1,7 +1,7 @@
 defaults:
   - datamodule: carla_cars
   - model: generative_nerf
-  - optim: adamw
+  - optim: adam
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
@@ -13,6 +13,9 @@ cudnn_benchmark: False
 data_dir: ${oc.env:DATA_DIR}
 
 num_rays: ${oc.decode:${oc.env:NUM_RAYS}}
+scheduler:
+  _target_: torch.optim.lr_scheduler.ExponentialLR
+  gamma: 0.995
 # shuffle_rays: True # Randomize rays, else take rays in order
 # ray_sampler:
 #   _target_: src.models.RaySampler
@@ -21,12 +24,11 @@ num_rays: ${oc.decode:${oc.env:NUM_RAYS}}
 experiment:
   randomseed: 1
   logdir: ${oc.env:LOG_DIR}
-  id: "test-carla"
+  id: "carla-adam"
   encoder_lr: 1e-4
-  decoder_lr: 1e-4
+  decoder_lr: 1e-3
   runs_per_image: 2
   iterations: 500000
-  validation_freq: 1000
-  print_freq: 100
-  save_freq: 25000
+  validation_freq: 5
+  save_freq: 500
 

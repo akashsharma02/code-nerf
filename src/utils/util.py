@@ -153,7 +153,7 @@ def log_losses(writer: SummaryWriter,
 
     for key, val in losses.items():
         writer.add_scalar(f"{mode}/{key}", val, i)
-        log_string += f"{key}: {val:>4.4f} "
+        log_string += f"{key}: {val:>4.6f} "
 
     return log_string
 

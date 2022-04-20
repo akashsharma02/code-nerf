@@ -59,6 +59,9 @@ def train(cfg: DictConfig) -> None:
         {"params": list(model.decoder.parameters()), 'lr': cfg.experiment.decoder_lr}
     ]
     optimizer = hydra.utils.instantiate(cfg.optim, optimization_params)
+    # Create scheduler
+    log.info(f"Instantiating scheduler: {cfg.scheduler._target_}")
+    scheduler = hydra.utils.instantiate(cfg.scheduler, optimizer=optimizer)
 
     train_iter = 0
     if cfg.checkpoint_dir:
@@ -91,7 +94,7 @@ def train(cfg: DictConfig) -> None:
                 pred_image.append(pred_rgb)
                 loss.backward()
                 optimizer.step()
-
+            scheduler.step()
             pred_image = torch.cat(pred_image, dim=0)
             loss_per_image = np.mean(loss_per_image)
             pred_image = pred_image.reshape([height, width, -1])
@@ -101,21 +104,26 @@ def train(cfg: DictConfig) -> None:
 
         loss_per_batch = loss_per_batch/batchsize
         log_string = utils.log_losses(writer, "train", train_iter, time.time()-then,
-                                      losses={"avg_loss": loss_per_batch, "avg_psnr": utils.mse2psnr(loss_per_batch)})
+                                      losses={
+            "avg_loss": loss_per_batch,
+            "avg_psnr": utils.mse2psnr(loss_per_batch),
+            "encoder_lr": scheduler.get_last_lr()[0],
+            "decoder_lr": scheduler.get_last_lr()[1]
+        })
         log.info(log_string)
-
-        val_then = time.time()
-        val_target_image, rgb_image, depth_image = validate(cfg, val_iterator, model, device)
-        val_target_image = val_target_image.squeeze().permute(1, 2, 0)
-        mse = torchmetrics.functional.mean_squared_error(rgb_image, val_target_image)
-        psnr = torchmetrics.functional.peak_signal_noise_ratio(rgb_image, val_target_image)
-        utils.log_losses(writer, "val", train_iter, time.time() - then, losses={"mse": mse, "psnr": psnr})
-        writer.add_image("val/target_image", val_target_image, train_iter, dataformats="HWC")
-        writer.add_image("val/rgb_image", rgb_image, train_iter, dataformats="HWC")
-        writer.add_image("val/depth_image", depth_image, train_iter, dataformats="HWC")
-        val_log_string = utils.log_losses(writer, "val", train_iter, time.time() - val_then,
-                                          losses={"avg_loss": mse, "avg_psnr": psnr})
-        log.info(val_log_string)
+        if train_iter != 0 and train_iter % cfg.experiment.validation_freq == 0:
+            val_then = time.time()
+            val_target_image, rgb_image, depth_image = validate(cfg, val_iterator, model, device)
+            val_target_image = val_target_image.squeeze().permute(1, 2, 0)
+            mse = torchmetrics.functional.mean_squared_error(rgb_image, val_target_image)
+            psnr = torchmetrics.functional.peak_signal_noise_ratio(rgb_image, val_target_image)
+            utils.log_losses(writer, "val", train_iter, time.time() - then, losses={"mse": mse, "psnr": psnr})
+            writer.add_image("val/target_image", val_target_image, train_iter, dataformats="HWC")
+            writer.add_image("val/rgb_image", rgb_image, train_iter, dataformats="HWC")
+            writer.add_image("val/depth_image", depth_image, train_iter, dataformats="HWC")
+            val_log_string = utils.log_losses(writer, "val", train_iter, time.time() - val_then,
+                                              losses={"avg_loss": mse, "avg_psnr": psnr})
+            log.info(val_log_string)
 
         if train_iter != 0 and train_iter % cfg.experiment.save_freq == 0:
             ckpt_dict = {

@@ -50,8 +50,8 @@ class CARLADataset(torch.utils.data.Dataset):
         rgb_fnames = [f for f in self.rgb_dir.iterdir() if f.is_file and f.suffix in [".png", ".jpg"]]
         pose_fnames = [f for f in self.pose_dir.iterdir() if f.is_file and f.suffix == ".npy"]
 
-        rgb_fnames = np.asarray(sorted(rgb_fnames, key=lambda x: int(x.stem)))[:2]
-        pose_fnames = np.asarray(sorted(pose_fnames, key=lambda x: x.stem.replace('_extrinsics', '')))[:2]
+        rgb_fnames = np.asarray(sorted(rgb_fnames, key=lambda x: int(x.stem)))
+        pose_fnames = np.asarray(sorted(pose_fnames, key=lambda x: x.stem.replace('_extrinsics', '')))
 
         assert len(rgb_fnames) == len(pose_fnames), "The number of pose files do not match number of rgb images"
 
@@ -93,7 +93,7 @@ class CARLADataset(torch.utils.data.Dataset):
 
         rgb_image = rgb.astype(np.float32)[..., :3]
         pose = pose.astype(np.float32)
-        transform = transforms.Resize(128)
+        transform = transforms.Resize(256)
         rgb_image = transform(self.transform(rgb_image))
         pose = self.transform(pose)
 
