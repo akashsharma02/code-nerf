@@ -41,7 +41,7 @@ class SRNDataset(torch.utils.data.Dataset):
             if tmp.exists():
                 self.base_path = tmp
 
-        self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
+        self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:1]
         self.num_objects = len(self.intrinsic)
 
         self.rgb_all_filenames, self.pose_all_filenames = [], []
@@ -88,6 +88,7 @@ class SRNDataset(torch.utils.data.Dataset):
         rgb_image = rgb_image.astype(np.float32)
         rgb_image = rgb_image[..., :3] * rgb_image[..., -1:] + (1 - rgb_image[..., -1:])
 
+        pose = pose @ np.diag([1, -1, -1, 1])
         pose = pose.astype(np.float32)
 
         intrinsic = self.transform(intrinsic)

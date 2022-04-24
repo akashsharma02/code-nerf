@@ -37,7 +37,7 @@ class CARLADataset(torch.utils.data.Dataset):
         self.intrinsic = np.eye(4)
         self.intrinsic[:3, :3] = intrinsic
         # We divide by 2, since we reduce the resolution of target image by 2
-        self.intrinsic[:2, :3] = self.intrinsic[:2, :3]/2
+        self.intrinsic[:2, :3] = self.intrinsic[:2, :3]/4
         self.intrinsic = self.transform(self.intrinsic.astype(np.float32))[0]
 
         self.dataset_name = "carla-cars"
@@ -47,8 +47,8 @@ class CARLADataset(torch.utils.data.Dataset):
 
         print(f"Loading CARLA dataset {self.root_dir} name: {self.dataset_name}-{self.stage}")
 
-        rgb_fnames = [f for f in self.rgb_dir.iterdir() if f.is_file and f.suffix in [".png", ".jpg"]]
-        pose_fnames = [f for f in self.pose_dir.iterdir() if f.is_file and f.suffix == ".npy"]
+        rgb_fnames = [f for f in self.rgb_dir.iterdir() if f.is_file and f.suffix in [".png", ".jpg"]][:2]
+        pose_fnames = [f for f in self.pose_dir.iterdir() if f.is_file and f.suffix == ".npy"][:2]
 
         rgb_fnames = np.asarray(sorted(rgb_fnames, key=lambda x: int(x.stem)))
         pose_fnames = np.asarray(sorted(pose_fnames, key=lambda x: x.stem.replace('_extrinsics', '')))
@@ -87,13 +87,12 @@ class CARLADataset(torch.utils.data.Dataset):
         rgb = self.rgb_frames[idx]
         pose = np.eye(4)
         pose[:3, :4] = self.poses[idx]
-        # pose = pose @ np.diag([1, -1, -1, 1])
 
         rgb = rgb / 255.0
 
         rgb_image = rgb.astype(np.float32)[..., :3]
         pose = pose.astype(np.float32)
-        transform = transforms.Resize(256)
+        transform = transforms.Resize(128)
         rgb_image = transform(self.transform(rgb_image))
         pose = self.transform(pose)
 
@@ -134,7 +133,7 @@ class CARLADataModule(object):
         self.data_train = CARLADataset(path=self.data_dir, stage="train", transform=self.transforms)
         self.data_val = CARLADataset(path=self.data_dir, stage="val", transform=self.transforms)
 
-    def setup(self, rank=0, num_replicas=1, shuffle=True, seed=0):
+    def setup(self, rank=0, num_replicas=1, seed=0):
         self.train_sampler = InfiniteSampler(self.data_train, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
         self.val_sampler = InfiniteSampler(self.data_val, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
 

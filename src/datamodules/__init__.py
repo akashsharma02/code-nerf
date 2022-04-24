@@ -59,10 +59,11 @@ def compute_ray_directions(intrinsics: torch.Tensor) -> torch.Tensor:
     return torch.stack(
         [
             (ii - cx) / focal_length,
-            (jj - cy) / focal_length,
-            torch.ones_like(ii),
+            -(jj - cy) / focal_length,
+            -torch.ones_like(ii),
         ],
-        dim=-1,)
+        dim=-1
+    )
 
 
 def compute_rays(ray_directions: torch.Tensor, world_T_camera: torch.Tensor):

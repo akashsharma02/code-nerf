@@ -1,6 +1,6 @@
 defaults:
   - datamodule: carla_cars
-  - model: generative_nerf
+  - model: generative_film_nerf
   - optim: adam
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
@@ -9,26 +9,21 @@ distributed: True
 checkpoint_dir: ~
 gpus: ~
 dist_url: "env://"
-cudnn_benchmark: False
+cudnn_benchmark: True
 data_dir: ${oc.env:DATA_DIR}
 
 num_rays: ${oc.decode:${oc.env:NUM_RAYS}}
 scheduler:
   _target_: torch.optim.lr_scheduler.ExponentialLR
-  gamma: 0.995
-# shuffle_rays: True # Randomize rays, else take rays in order
-# ray_sampler:
-#   _target_: src.models.RaySampler
-#   num_samples: ${oc.decode:${oc.env:NUM_RAYS}}
+  gamma: 0.99995
 
 experiment:
   randomseed: 1
   logdir: ${oc.env:LOG_DIR}
-  id: "carla-adam"
-  encoder_lr: 1e-4
+  id: "carla128-film-sirendecoder-overfit1object-1e-5-5e-3-2condlayers"
+  encoder_lr: 1e-5
   decoder_lr: 1e-3
-  runs_per_image: 2
-  iterations: 500000
-  validation_freq: 5
+  iterations: 5000
+  validation_freq: 50000000
   save_freq: 500
 

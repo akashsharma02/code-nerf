@@ -1,9 +1,4 @@
-_target_: src.models.GenerativeNeRF
-code_size: 256
-decoder_hidden_size: 256
-num_encoding_xyz: 10
-log_sampling: True
-include_input: True
+_target_: src.models.model.GenerativeNeRF
 point_sampler:
   _target_: src.models.PointSampler
   num_samples: ${oc.decode:${oc.env:NUM_POINTS}}
@@ -11,5 +6,17 @@ point_sampler:
   far: 1.8
   spacing_mode: "lindisp"
   perturb: True
+encoder:
+  _target_: src.models.model.ImageEncoder
+  backbone: "resnet34"
+  pretrained: True
+  latent_size: 256
+decoder:
+  _target_: src.models.model.NeRFDecoderNet
+  hidden_size: 256
+  code_size: 256
+  num_encoding_xyz: 10
+  log_sampling: True
+  include_input: True
 
 

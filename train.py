@@ -11,7 +11,6 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
-import src.models as nerf
 import src.utils as utils
 import torchmetrics
 
@@ -46,7 +45,7 @@ def train(cfg: DictConfig) -> None:
     # Load Data
     log.info(f"Instantiating datamodule: {cfg.datamodule._target_}")
     datamodule = hydra.utils.instantiate(cfg.datamodule)
-    datamodule.setup(rank=cfg.rank, shuffle=True, seed=seed)
+    datamodule.setup(rank=cfg.rank, seed=seed)
 
     # Load model
     log.info(f"Instantiating model: {cfg.model._target_}")
@@ -59,10 +58,12 @@ def train(cfg: DictConfig) -> None:
         {"params": list(model.decoder.parameters()), 'lr': cfg.experiment.decoder_lr}
     ]
     optimizer = hydra.utils.instantiate(cfg.optim, optimization_params)
+
     # Create scheduler
     log.info(f"Instantiating scheduler: {cfg.scheduler._target_}")
     scheduler = hydra.utils.instantiate(cfg.scheduler, optimizer=optimizer)
 
+    # Load checkpoint
     train_iter = 0
     if cfg.checkpoint_dir:
         train_iter, model, optimizer = utils.load_checkpoint(cfg, model, optimizer)
@@ -79,13 +80,16 @@ def train(cfg: DictConfig) -> None:
         batchsize = rays.shape[0]
         loss_per_batch = 0.0
         for batchnum in range(0,  batchsize):
-
-            ray_batch = utils.batchify(rays[batchnum], cfg.num_rays)
+            curr_rays = rays[batchnum]
+            # shuffle_idx = torch.randperm(curr_rays.shape[0])
+            # curr_rays = curr_rays[shuffle_idx, ...]
+            ray_batch = utils.batchify(curr_rays, cfg.num_rays)
             target_rgb_batch = utils.batchify(target_rgb[batchnum], cfg.num_rays)
             target_image_batch = target_image[batchnum]
             height, width = target_image_batch.shape[-2], target_image_batch.shape[-1]
 
             loss_per_image, pred_image = [], []
+
             for i, (ray, rgb) in enumerate(zip(ray_batch, target_rgb_batch)):
                 optimizer.zero_grad()
                 pred_rgb, pred_depth = model(target_image_batch[None, ...], ray)
@@ -94,7 +98,7 @@ def train(cfg: DictConfig) -> None:
                 pred_image.append(pred_rgb)
                 loss.backward()
                 optimizer.step()
-            scheduler.step()
+
             pred_image = torch.cat(pred_image, dim=0)
             loss_per_image = np.mean(loss_per_image)
             pred_image = pred_image.reshape([height, width, -1])
@@ -107,10 +111,11 @@ def train(cfg: DictConfig) -> None:
                                       losses={
             "avg_loss": loss_per_batch,
             "avg_psnr": utils.mse2psnr(loss_per_batch),
-            "encoder_lr": scheduler.get_last_lr()[0],
-            "decoder_lr": scheduler.get_last_lr()[1]
+            "encoder_lr": optimizer.param_groups[0]['lr'],
+            "decoder_lr": optimizer.param_groups[1]['lr']
         })
         log.info(log_string)
+        scheduler.step()
         if train_iter != 0 and train_iter % cfg.experiment.validation_freq == 0:
             val_then = time.time()
             val_target_image, rgb_image, depth_image = validate(cfg, val_iterator, model, device)
