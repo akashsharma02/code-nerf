@@ -10,13 +10,14 @@ from omegaconf import DictConfig
 import numpy as np
 import torch
 import torch.multiprocessing as mp
+from torch.utils.tensorboard import SummaryWriter
 
 import src.utils as utils
+from src.utils import rank_zero_print
+from src.models.model import TrainableModel
 import torchmetrics
 
 load_dotenv()
-
-log = utils.get_logger(__name__)
 
 
 def train(cfg: DictConfig) -> None:
@@ -29,7 +30,8 @@ def train(cfg: DictConfig) -> None:
 
     """
     # Seed experiment for repeatability (Each process should sample different rays)
-    device = torch.device('cuda', cfg.gpu)
+
+    device: torch.device = torch.device('cuda', cfg.gpu)
     # TODO: Remove this later
     torch.backends.cudnn.enabled = False    # Improves training speed.
     torch.backends.cudnn.benchmark = cfg.cudnn_benchmark    # Improves training speed.
@@ -40,38 +42,44 @@ def train(cfg: DictConfig) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    writer = utils.prepare_experiment(cfg)
+    writer: SummaryWriter = utils.prepare_experiment(cfg)
 
     # Load Data
-    log.info(f"Instantiating datamodule: {cfg.datamodule._target_}")
+    rank_zero_print(f"Instantiating datamodule: {cfg.datamodule._target_}")
     datamodule = hydra.utils.instantiate(cfg.datamodule)
-    datamodule.setup(rank=cfg.rank, seed=seed)
+    datamodule.setup(rank=cfg.rank, num_replicas=cfg.world_size, seed=seed)
 
     # Load model
-    log.info(f"Instantiating model: {cfg.model._target_}")
-    model = hydra.utils.instantiate(cfg.model)
+    rank_zero_print(f"Instantiating model: {cfg.model._target_}")
+    nn_model = hydra.utils.instantiate(cfg.model)
 
     # Create optimizer
-    log.info(f"Instantiating optimizer: {cfg.optim._target_}")
+    rank_zero_print(f"Instantiating optimizer: {cfg.optim._target_}")
     optimization_params = [
-        {"params": list(model.encoder.parameters()), 'lr': cfg.experiment.encoder_lr},
-        {"params": list(model.decoder.parameters()), 'lr': cfg.experiment.decoder_lr}
+        {"params": list(nn_model.encoder.parameters()), 'lr': cfg.experiment.encoder_lr},
+        {"params": list(nn_model.decoder.parameters()), 'lr': cfg.experiment.decoder_lr}
     ]
     optimizer = hydra.utils.instantiate(cfg.optim, optimization_params)
 
     # Create scheduler
-    log.info(f"Instantiating scheduler: {cfg.scheduler._target_}")
+    rank_zero_print(f"Instantiating scheduler: {cfg.scheduler._target_}")
     scheduler = hydra.utils.instantiate(cfg.scheduler, optimizer=optimizer)
 
-    # Load checkpoint
-    train_iter = 0
-    if cfg.checkpoint_dir:
-        train_iter, model, optimizer = utils.load_checkpoint(cfg, model, optimizer)
+    model = TrainableModel(nn_model, optimizer, scheduler, cfg.gpu, cfg.checkpoint_dir)
+    if cfg.checkpoint_dir is not None:
+        model.load()
+
+    if cfg.experiment.decoder_lr != model.optimizer.param_groups[1]['lr']:
+        print(model.optimizer.param_groups[1]['lr'], cfg.experiment.decoder_lr)
+        model.optimizer.param_groups[1]['lr'] = cfg.experiment.decoder_lr
 
     model.train()
-    model.to(device)
     val_iterator = iter(datamodule.val_dataloader())
-    for train_iter, batch in enumerate(datamodule.train_dataloader()):
+    train_iterator = iter(datamodule.train_dataloader())
+    train_iter = model.train_iter
+    for train_iter in range(model.train_iter, cfg.experiment.iterations):
+
+        batch = next(train_iterator)
 
         then = time.time()
         rays = batch["rays"].to(device)
@@ -81,8 +89,6 @@ def train(cfg: DictConfig) -> None:
         loss_per_batch = 0.0
         for batchnum in range(0,  batchsize):
             curr_rays = rays[batchnum]
-            # shuffle_idx = torch.randperm(curr_rays.shape[0])
-            # curr_rays = curr_rays[shuffle_idx, ...]
             ray_batch = utils.batchify(curr_rays, cfg.num_rays)
             target_rgb_batch = utils.batchify(target_rgb[batchnum], cfg.num_rays)
             target_image_batch = target_image[batchnum]
@@ -92,20 +98,20 @@ def train(cfg: DictConfig) -> None:
 
             for i, (ray, rgb) in enumerate(zip(ray_batch, target_rgb_batch)):
                 optimizer.zero_grad()
-                pred_rgb, pred_depth = model(target_image_batch[None, ...], ray)
+                pred_rgb, pred_depth = model.model(target_image_batch[None, ...], ray)
                 loss = torch.nn.functional.mse_loss(pred_rgb, rgb)
                 loss_per_image.append(loss.item())
                 pred_image.append(pred_rgb)
                 loss.backward()
-                optimizer.step()
+                model.optimizer.step()
 
             pred_image = torch.cat(pred_image, dim=0)
             loss_per_image = np.mean(loss_per_image)
             pred_image = pred_image.reshape([height, width, -1])
-            writer.add_image("train/rgb_image", pred_image, train_iter, dataformats="HWC")
-            writer.add_image("train/target", target_image_batch, train_iter, dataformats="CHW")
+            if writer:
+                writer.add_image("train/rgb_image", pred_image, train_iter, dataformats="HWC")
+                writer.add_image("train/target", target_image_batch, train_iter, dataformats="CHW")
             loss_per_batch += loss_per_image
-
         loss_per_batch = loss_per_batch/batchsize
         log_string = utils.log_losses(writer, "train", train_iter, time.time()-then,
                                       losses={
@@ -114,30 +120,29 @@ def train(cfg: DictConfig) -> None:
             "encoder_lr": optimizer.param_groups[0]['lr'],
             "decoder_lr": optimizer.param_groups[1]['lr']
         })
-        log.info(log_string)
+        rank_zero_print(log_string)
+
         scheduler.step()
+
         if train_iter != 0 and train_iter % cfg.experiment.validation_freq == 0:
             val_then = time.time()
-            val_target_image, rgb_image, depth_image = validate(cfg, val_iterator, model, device)
+            val_target_image, rgb_image, depth_image = validate(cfg, val_iterator, model.model, device)
             val_target_image = val_target_image.squeeze().permute(1, 2, 0)
             mse = torchmetrics.functional.mean_squared_error(rgb_image, val_target_image)
             psnr = torchmetrics.functional.peak_signal_noise_ratio(rgb_image, val_target_image)
             utils.log_losses(writer, "val", train_iter, time.time() - then, losses={"mse": mse, "psnr": psnr})
-            writer.add_image("val/target_image", val_target_image, train_iter, dataformats="HWC")
-            writer.add_image("val/rgb_image", rgb_image, train_iter, dataformats="HWC")
-            writer.add_image("val/depth_image", depth_image, train_iter, dataformats="HWC")
+            if writer:
+                writer.add_image("val/target_image", val_target_image, train_iter, dataformats="HWC")
+                writer.add_image("val/rgb_image", rgb_image, train_iter, dataformats="HWC")
+                writer.add_image("val/depth_image", depth_image, train_iter, dataformats="HWC")
             val_log_string = utils.log_losses(writer, "val", train_iter, time.time() - val_then,
                                               losses={"avg_loss": mse, "avg_psnr": psnr})
-            log.info(val_log_string)
+            rank_zero_print(val_log_string)
 
         if train_iter != 0 and train_iter % cfg.experiment.save_freq == 0:
-            ckpt_dict = {
-                "iter": train_iter,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "loss": loss.item(),
-            }
-            torch.save(ckpt_dict, Path(writer.log_dir) / f"checkpoint{train_iter}.ckpt")
+            model.save(writer.log_dir)
+
+        model.train_iter = train_iter
 
 
 def validate(cfg: DictConfig,
@@ -231,8 +236,8 @@ def main(cfg: DictConfig):
 
     """
     setup_training_kwargs(cfg)
-    log.info(f"Working dir: {os.getcwd()}")
-    log.info('Launching processes...')
+    rank_zero_print(f"Working dir: {os.getcwd()}")
+    rank_zero_print('Launching processes...')
     if cfg.distributed:
         mp.spawn(subprocess_fn, args=(cfg,), nprocs=cfg.gpus)
     else:

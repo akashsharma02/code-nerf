@@ -6,8 +6,30 @@ import numpy as np
 import imageio
 import torch
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
-from . import InfiniteSampler, compute_ray_directions, compute_rays
+from . import InfiniteSampler, DataModule, compute_ray_directions, compute_rays
+
+
+class CARLADataModule(DataModule):
+    def __init__(
+        self,
+        data_dir: str = "data/",
+        batch_size: int = 1,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+        shuffle: bool = False
+    ):
+        super(CARLADataModule, self).__init__(data_dir, batch_size, num_workers, pin_memory, shuffle)
+
+        self.transforms = transforms.Compose(
+            [transforms.ToTensor()]
+        )
+        self.data_train = CARLADataset(path=self.data_dir, stage="train", transform=self.transforms)
+        self.data_val = CARLADataset(path=self.data_dir, stage="val", transform=self.transforms)
+
+    def setup(self, rank=0, num_replicas=1, seed=0):
+        self.train_sampler = InfiniteSampler(self.data_train, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
+        self.val_sampler = InfiniteSampler(self.data_val, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
+        super(CARLADataModule, self).setup(rank=rank, num_replicas=num_replicas, seed=seed)
 
 
 class CARLADataset(torch.utils.data.Dataset):
@@ -107,53 +129,3 @@ class CARLADataset(torch.utils.data.Dataset):
         }
 
         return sample
-
-
-class CARLADataModule(object):
-    def __init__(
-        self,
-        data_dir: str = "data/",
-        train_batch_size: int = 1,
-        val_batch_size: int = 1,
-        num_workers: int = 0,
-        pin_memory: bool = False,
-        shuffle: bool = False
-    ):
-        super().__init__()
-        self.data_dir = data_dir
-        self.train_batch_size = train_batch_size
-        self.val_batch_size = val_batch_size
-        self.num_workers = num_workers
-        self.pin_memory = pin_memory
-        self.shuffle = shuffle
-
-        self.transforms = transforms.Compose(
-            [transforms.ToTensor()]
-        )
-        self.data_train = CARLADataset(path=self.data_dir, stage="train", transform=self.transforms)
-        self.data_val = CARLADataset(path=self.data_dir, stage="val", transform=self.transforms)
-
-    def setup(self, rank=0, num_replicas=1, seed=0):
-        self.train_sampler = InfiniteSampler(self.data_train, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
-        self.val_sampler = InfiniteSampler(self.data_val, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
-
-        self.train_loader = DataLoader(
-            dataset=self.data_train,
-            sampler=self.train_sampler,
-            batch_size=self.train_batch_size,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-        )
-        self.val_loader = DataLoader(
-            dataset=self.data_val,
-            sampler=self.val_sampler,
-            batch_size=self.val_batch_size,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-        )
-
-    def train_dataloader(self):
-        return self.train_loader
-
-    def val_dataloader(self):
-        return self.val_loader

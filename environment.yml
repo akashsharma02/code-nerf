@@ -13,7 +13,9 @@ dependencies:
   - tensorboard
   - matplotlib
   - pyyaml
+  - rich
   - pip
   - pip:
       - hydra-core
+      - hydra-colorlog
 

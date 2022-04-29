@@ -200,7 +200,9 @@ class PointSampler(object):
         """
         Normalize the points to be in range: -1 to 1 for Siren
         """
-        pts = pts - torch.min(pts, dim=-2, keepdim=True)[0]
-        pts = pts / torch.max(pts, dim=-2, keepdim=True)[0]
+        min_point = torch.Tensor([self.near, self.near, self.near]).to(pts.device)
+        max_point = torch.Tensor([self.far, self.far, self.far]).to(pts.device)
+        pts = pts - min_point[None, None, :]
+        pts = pts / max_point[None, None, :]
         pts = (pts - 0.5) * 2
         return pts

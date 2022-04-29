@@ -2,8 +2,8 @@ _target_: src.models.model.GenerativeFiLMNeRF
 point_sampler:
   _target_: src.models.PointSampler
   num_samples: ${oc.decode:${oc.env:NUM_POINTS}}
-  near: 0.1
-  far: 30.0
+  near: 0.8
+  far: 1.8
   spacing_mode: "lindisp"
   perturb: True
 encoder:
@@ -11,14 +11,14 @@ encoder:
   backbone: "resnet34"
   pretrained: True
   latent_size: 256
-  num_cond_layers: 2
+  num_cond_layers: 6
 decoder:
-  _target_: src.models.model.FiLMNeRFDecoder
+  _target_: src.models.model.FiLMLinearNeRFDecoder
   hidden_size: 256
   code_size: 256
-  num_cond_layers: 2
-  # num_encoding_xyz: 10
-  # log_sampling: True
-  # include_input: True
+  num_cond_layers: 6
+  num_encoding_xyz: 10
+  log_sampling: True
+  include_input: True
 
 

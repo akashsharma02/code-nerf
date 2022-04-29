@@ -1,7 +1,10 @@
-from typing import Literal, Tuple
+from typing import Literal, Tuple, Callable
+from pathlib import Path
 import torch
 import torchvision
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as ddp
 from . import ResidualLayer, SirenLinear, FiLMLayer, PositionalEncoder, PointSampler, volume_render, Sine, Gaussian
 
 
@@ -122,7 +125,7 @@ class FiLMLinearNeRFDecoder(nn.Module):
         self.layer_xyz1 = FiLMLayer(self.dim_xyz, self.hidden_size, torch.nn.functional.relu)
         self.layer_xyz2 = FiLMLayer(self.hidden_size, self.hidden_size, torch.nn.functional.relu)
         self.layer_xyz3 = FiLMLayer(self.hidden_size, self.hidden_size, torch.nn.functional.relu)
-        self.layer_xyz4 = FiLMLayer(self.hidden_size, self.hidden_size, torch.nn.functional.relu)
+        self.layer_xyz4 = FiLMLayer(self.hidden_size + self.dim_xyz, self.hidden_size, torch.nn.functional.relu)
         self.layer_xyz5 = FiLMLayer(self.hidden_size, self.hidden_size, torch.nn.functional.relu)
 
         self.layer_rgb = FiLMLayer(self.hidden_size, self.hidden_size, torch.nn.functional.relu)
@@ -146,14 +149,15 @@ class FiLMLinearNeRFDecoder(nn.Module):
             phase_shift_list.append(phase_shift[..., i * self.hidden_size: (i+1) * self.hidden_size])
 
         xyz_out = self.layer_xyz1(xyz, freq_list[0], phase_shift_list[0])
-        xyz_out = self.layer_xyz2(xyz_out, freq_list[0], phase_shift_list[0])
-        xyz_out = self.layer_xyz3(xyz_out, freq_list[0], phase_shift_list[0])
-        xyz_out = self.layer_xyz4(xyz_out, freq_list[0], phase_shift_list[0])
-        xyz_out = self.layer_xyz5(xyz_out, freq_list[0], phase_shift_list[0])
+        xyz_out = self.layer_xyz2(xyz_out, freq_list[1], phase_shift_list[1])
+        xyz_out = self.layer_xyz3(xyz_out, freq_list[2], phase_shift_list[2])
+        xyz_out = torch.cat([xyz_out, xyz], dim=-1)
+        xyz_out = self.layer_xyz4(xyz_out, freq_list[3], phase_shift_list[3])
+        xyz_out = self.layer_xyz5(xyz_out, freq_list[4], phase_shift_list[4])
 
         sigma = self.fc_sigma(xyz_out)
 
-        view_out = self.layer_rgb(xyz_out, freq_list[1], phase_shift_list[1])
+        view_out = self.layer_rgb(xyz_out, freq_list[5], phase_shift_list[5])
         rgb = self.fc_rgb(view_out)
 
         return rgb, sigma
@@ -172,12 +176,14 @@ class FiLMNeRFDecoder(nn.Module):
         self.num_cond_layers = num_cond_layers
 
         self.layer_xyz1 = FiLMLayer(3, self.hidden_size, Sine(30.0))
-        self.layer_xyz2 = FiLMLayer(self.hidden_size, self.hidden_size, Sine())
-        self.layer_xyz3 = FiLMLayer(self.hidden_size, self.hidden_size, Sine())
-        self.layer_xyz4 = FiLMLayer(self.hidden_size, self.hidden_size, Sine())
-        self.layer_xyz5 = FiLMLayer(self.hidden_size, self.hidden_size, Sine())
+        with torch.no_grad():
+            self.layer_xyz1.layer.weight.uniform_(-1 / 3, 1 / 3)
+        self.layer_xyz2 = FiLMLayer(self.hidden_size, self.hidden_size, Sine(30.0))
+        self.layer_xyz3 = FiLMLayer(self.hidden_size, self.hidden_size, Sine(30.0))
+        self.layer_xyz4 = FiLMLayer(self.hidden_size + 3, self.hidden_size, Sine(30.0))
+        self.layer_xyz5 = FiLMLayer(self.hidden_size, self.hidden_size, Sine(30.0))
 
-        self.layer_rgb = FiLMLayer(self.hidden_size, self.hidden_size, Sine())
+        self.layer_rgb = FiLMLayer(self.hidden_size, self.hidden_size, Sine(30.0))
         self.fc_sigma = nn.Linear(self.hidden_size, 1)
         self.fc_rgb = nn.Linear(self.hidden_size, 3)
 
@@ -198,14 +204,15 @@ class FiLMNeRFDecoder(nn.Module):
             phase_shift_list.append(phase_shift[..., i * self.hidden_size: (i+1) * self.hidden_size])
 
         xyz_out = self.layer_xyz1(xyz, freq_list[0], phase_shift_list[0])
-        xyz_out = self.layer_xyz2(xyz_out, freq_list[0], phase_shift_list[0])
-        xyz_out = self.layer_xyz3(xyz_out, freq_list[0], phase_shift_list[0])
-        xyz_out = self.layer_xyz4(xyz_out, freq_list[0], phase_shift_list[0])
-        xyz_out = self.layer_xyz5(xyz_out, freq_list[0], phase_shift_list[0])
+        xyz_out = self.layer_xyz2(xyz_out, freq_list[1], phase_shift_list[1])
+        xyz_out = self.layer_xyz3(xyz_out, freq_list[2], phase_shift_list[2])
+        xyz_out = torch.cat([xyz_out, xyz], dim=-1)
+        xyz_out = self.layer_xyz4(xyz_out, freq_list[3], phase_shift_list[3])
+        xyz_out = self.layer_xyz5(xyz_out, freq_list[4], phase_shift_list[4])
 
         sigma = self.fc_sigma(xyz_out)
 
-        view_out = self.layer_rgb(xyz_out, freq_list[1], phase_shift_list[1])
+        view_out = self.layer_rgb(xyz_out, freq_list[5], phase_shift_list[5])
         rgb = self.fc_rgb(view_out)
 
         return rgb, sigma
@@ -335,6 +342,67 @@ class ImageEncoderStyle(nn.Module):
         return freq, phase_shift  # freq and phase_shift = [..., latent_size*num_cond_layers]
 
 
+class TrainableModel(object):
+    def __init__(
+        self,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: Callable,
+        gpu: int,
+        checkpoint_dir: str
+    ):
+        self.checkpoint_dir = checkpoint_dir
+        self.distributed = dist.is_initialized()
+        self.gpu = gpu
+        model = model.to(gpu)
+        self.model = ddp(model, device_ids=[gpu], output_device=gpu) if self.distributed else model
+        self.optimizer, self.scheduler = optimizer, scheduler
+        self.train_iter = 0
+
+    def load(self):
+        """
+        Loads the model by taking care of DistributedDataParallel
+        """
+        checkpoint_file = Path(self.checkpoint_dir)
+        if checkpoint_file.exists() and checkpoint_file.is_file() and checkpoint_file.suffix == ".ckpt":
+            map_location = {"cuda:0": f"cuda:{self.gpu}"}
+            checkpoint = torch.load(checkpoint_file, map_location=map_location)
+            # Ensure that all loading by all processes is done before any process has started saving models
+            if self.distributed:
+                torch.distributed.barrier()
+
+            if not self.distributed:
+                torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(checkpoint["model"], "module.")
+            self.model.load_state_dict(checkpoint["model"])
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
+            self.train_iter = checkpoint["iter"]
+
+        else:
+            raise Exception(f"Checkpoint file does not exist: {self.checkpoint_dir}")
+
+    def save(self, logdir):
+        """
+        Save the underlying nn.Module
+        """
+        checkpoint_dict = {
+            "iter": self.train_iter,
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict(),
+        }
+        torch.save(checkpoint_dict, Path(logdir) / f"checkpoint{self.train_iter}.ckpt")
+
+    def train(self):
+        """
+        Put the model in train mode
+        """
+        self.model.train()
+
+    def eval(self):
+        self.model.eval()
+
+
 class GenerativeNeRF(nn.Module):
     def __init__(self,
                  point_sampler: PointSampler,
@@ -390,6 +458,7 @@ class GenerativeFiLMNeRF(nn.Module):
         freq, phase_shift = self.encoder(x)
         pts, z_vals = self.point_sampler.sample_uniform(rays)
         ray_directions = rays[..., 3:]
+        # pts = self.point_sampler.normalize(pts)
         rgb_per_xyz, sigma_per_xyz = self.decoder(freq, phase_shift, pts)
         rgb_per_ray, disparity_per_ray, _, _, depth_per_ray = volume_render(rgb_per_xyz, sigma_per_xyz, z_vals, ray_directions)
         return rgb_per_ray, depth_per_ray

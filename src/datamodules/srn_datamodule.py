@@ -6,8 +6,30 @@ import numpy as np
 import imageio
 import torch
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
-from . import InfiniteSampler, compute_ray_directions, compute_rays
+from . import InfiniteSampler, DataModule, compute_ray_directions, compute_rays
+
+
+class SRNDataModule(DataModule):
+    def __init__(
+        self,
+        data_dir: str = "data/",
+        batch_size: int = 1,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+        shuffle: bool = True
+    ):
+        super(SRNDataModule, self).__init__(data_dir, batch_size, num_workers, pin_memory, shuffle)
+
+        self.transforms = transforms.Compose(
+            [transforms.ToTensor()]
+        )
+        self.data_train = SRNDataset(path=self.data_dir, stage="train")
+        self.data_val = SRNDataset(path=self.data_dir, stage="val")
+
+    def setup(self, rank=0, num_replicas=1, shuffle=True, seed=0):
+        self.train_sampler = InfiniteSampler(self.data_train, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
+        self.val_sampler = InfiniteSampler(self.data_val, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
+        super(SRNDataModule, self).setup(rank=rank, num_replicas=num_replicas, seed=seed)
 
 
 class SRNDataset(torch.utils.data.Dataset):
@@ -41,7 +63,7 @@ class SRNDataset(torch.utils.data.Dataset):
             if tmp.exists():
                 self.base_path = tmp
 
-        self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))[:1]
+        self.intrinsic = sorted(self.base_path.glob("*/intrinsics.txt"))
         self.num_objects = len(self.intrinsic)
 
         self.rgb_all_filenames, self.pose_all_filenames = [], []
@@ -106,53 +128,3 @@ class SRNDataset(torch.utils.data.Dataset):
             "rgb_image": rgb_image,
         }
         return sample
-
-
-class SRNDataModule(object):
-    def __init__(
-        self,
-        data_dir: str = "data/",
-        batch_size: int = 1,
-        num_workers: int = 0,
-        pin_memory: bool = False,
-        shuffle: bool = True
-    ):
-        super().__init__()
-        self.data_dir = data_dir
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.pin_memory = pin_memory
-        self.shuffle = shuffle
-
-        self.transforms = transforms.Compose(
-            [transforms.ToTensor()]
-        )
-        self.data_train = SRNDataset(path=self.data_dir, stage="train")
-        self.data_val = SRNDataset(path=self.data_dir, stage="val")
-
-    def setup(self, rank=0, num_replicas=1, shuffle=True, seed=0):
-        self.train_sampler = InfiniteSampler(self.data_train, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
-        self.val_sampler = InfiniteSampler(self.data_val, rank=rank, num_replicas=num_replicas, shuffle=self.shuffle, seed=seed)
-
-        self.train_loader = DataLoader(
-            dataset=self.data_train,
-            sampler=self.train_sampler,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            # shuffle=self.shuffle
-        )
-        self.val_loader = DataLoader(
-            dataset=self.data_val,
-            sampler=self.val_sampler,
-            batch_size=1,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            # shuffle=self.shuffle,
-        )
-
-    def train_dataloader(self):
-        return self.train_loader
-
-    def val_dataloader(self):
-        return self.val_loader

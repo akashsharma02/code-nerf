@@ -1,4 +1,5 @@
 from typing import Tuple, List, Optional, OrderedDict, Literal, Union, Callable, Any, Sequence, Dict
+import os
 import logging
 from functools import wraps
 import math
@@ -9,7 +10,6 @@ import rich.tree
 from omegaconf import DictConfig, OmegaConf
 
 from torch.utils.tensorboard import SummaryWriter
-import torch.distributed as dist
 
 
 def rank_zero_only(fn: Callable) -> Callable:
@@ -17,35 +17,19 @@ def rank_zero_only(fn: Callable) -> Callable:
 
     @wraps(fn)
     def wrapped_fn(*args: Any, **kwargs: Any) -> Optional[Any]:
-        if (dist.is_initialized() and dist.get_rank() == 0) or (not dist.is_initialized()):
+        if torch.cuda.current_device() == 0:
             return fn(*args, **kwargs)
+        if not torch.cuda.is_available():
+            return fn(*args, **kwargs)
+
         return None
 
     return wrapped_fn
 
 
-def get_logger(name=__name__) -> logging.Logger:
-    """Initializes multi-GPU-friendly python command line logger."""
-
-    logger = logging.getLogger(name)
-
-    # this ensures all logging levels get marked with the rank zero decorator
-    # otherwise logs would get multiplied for each GPU process in multi-GPU setup
-    for level in (
-        "debug",
-        "info",
-        "warning",
-        "error",
-        "exception",
-        "fatal",
-        "critical",
-    ):
-        setattr(logger, level, rank_zero_only(getattr(logger, level)))
-
-    return logger
-
-
-log = get_logger(__name__)
+@rank_zero_only
+def rank_zero_print(*args, **kwargs):
+    print(*args, **kwargs)
 
 
 @rank_zero_only
@@ -90,7 +74,7 @@ def print_config(
     quee = []
 
     for field in print_order:
-        quee.append(field) if field in config else log.info(f"Field '{field}' not found in config")
+        quee.append(field) if field in config else print(f"Field '{field}' not found in config")
 
     for field in config:
         if field not in quee:
@@ -116,7 +100,7 @@ def print_config(
 def dict_to_device(batch: Dict, device: torch.device) -> Dict:
     for k, v in batch.items():
         if torch.is_tensor(v):
-            batch[k] = batch[k].to(device)
+            batch[k] = batch[k].to(device, nonblocking=True)
     return batch
 
 

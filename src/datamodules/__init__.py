@@ -1,5 +1,65 @@
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
+import torch.distributed as dist
+
+
+class DataModule(object):
+    def __init__(
+        self,
+        data_dir: str = "data/",
+        batch_size: int = 1,
+        num_workers: int = 0,
+        pin_memory: bool = True,
+        shuffle: bool = True
+    ):
+        super().__init__()
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.shuffle = shuffle
+        self.replacewith_dist_sampler = True if dist.is_initialized() else False
+
+        self.data_train, self.data_val = None, None
+
+    def setup(self, rank=0, num_replicas=1, seed=0, iterations=1):
+
+        if self.replacewith_dist_sampler:
+            self.train_sampler = torch.utils.data.DistributedSampler(
+                self.data_train,
+                num_replicas=dist.get_world_size(),
+                rank=dist.get_rank(),
+                drop_last=False
+            )
+            self.val_sampler = torch.utils.data.DistributedSampler(
+                self.data_val,
+                num_replicas=dist.get_world_size(),
+                rank=dist.get_rank(),
+                drop_last=False
+            )
+
+        self.train_loader = DataLoader(
+            dataset=self.data_train,
+            sampler=self.train_sampler,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+        # Only one validation batch
+        self.val_loader = DataLoader(
+            dataset=self.data_val,
+            sampler=self.val_sampler,
+            batch_size=1,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+
+    def train_dataloader(self):
+        return self.train_loader
+
+    def val_dataloader(self):
+        return self.val_loader
 
 
 class InfiniteSampler(torch.utils.data.Sampler):
